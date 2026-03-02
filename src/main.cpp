@@ -1,56 +1,117 @@
 // TODO: add temperature sensor
-
 #include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_HDC302x.h>
 
 #define PIN_BUTTON  32
-#define PIN_HCHO    34
+#define PIN_HCHO    39
 #define PIN_VOC     35
-#define PIN_NH3     39
+#define PIN_NH3     34
 #define PIN_LED     2
 
-bool measuringMode = false;
-bool lastButtonState = HIGH;
+// Expected clean-air baseline voltage ranges derived from datasheet long-term stability curves:
+//   SEN0566 VOC  (Fig 7): V0 ~1.9 V in clean air
+//   SEN0567 NH3  (Fig 7): V0 ~1.2 V in clean air
+//   SEN0563 HCHO (Fig 4): V0 ~1.7 V in clean air
+#define VOC_BASELINE_MIN   1.0f
+#define VOC_BASELINE_MAX   2.8f
+#define NH3_BASELINE_MIN   0.5f
+#define NH3_BASELINE_MAX   2.2f
+#define HCHO_BASELINE_MIN  0.8f
+#define HCHO_BASELINE_MAX  2.5f
+
+// Sensor fault thresholds (3.3 V rail, ADC_11db attenuation):
+//   < FAULT_LOW  -> open circuit or heater failure
+//   > FAULT_HIGH -> short circuit or ADC saturation
+#define VOLTAGE_FAULT_LOW  0.2f
+#define VOLTAGE_FAULT_HIGH 3.2f
+
+Adafruit_HDC302x hdc = Adafruit_HDC302x();
+bool hdcReady    = false;
+bool hchoEnabled = false;
+
+bool measuringMode    = false;
+bool lastButtonState  = HIGH;
 
 float v0_hcho = -1;
 float v0_voc  = -1;
 float v0_nh3  = -1;
 
+const unsigned long MEASURE_INTERVAL_MS = 1000;
+unsigned long lastMeasureTime = 0;
+
+void     handleButton();
+float    getAverageVoltage(int pin);
+bool     checkVoltage(float voltage, const char* name);
+bool     checkBaseline(float voltage, float minV, float maxV, const char* name);
+void     takeMeasurement();
+float    estimatePPM_HCHO(float ratio);
+float    estimatePPM_VOC(float voltage);
+float    estimatePPM_NH3(float voltage);
+
 void setup() {
   Serial.begin(115200);
-  analogReadResolution(12);         // 12-bit: 0-4095
-  analogSetAttenuation(ADC_11db);   // read up to ~3.3V
+  analogReadResolution(12);         // 12-bit: 0–4095
+  analogSetAttenuation(ADC_11db);   // read up to ~3.3 V
   pinMode(PIN_BUTTON, INPUT_PULLUP);
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, LOW);
   Serial.println("=== WARMING UP MODE ===");
   Serial.println("Press button when ready to measure.");
+  if (!hchoEnabled) {
+    Serial.println("[INFO] HCHO sensor disabled (not installed).");
+  }
+
+  Wire.begin(21, 22);
+  hdcReady = hdc.begin(0x44, &Wire);
+  Serial.println(hdcReady ? "HDC3022 ready." : "HDC3022 not found.");
 }
 
 void loop() {
   handleButton();
 
+  if (measuringMode) {
+    unsigned long now = millis();
+    if (now - lastMeasureTime >= MEASURE_INTERVAL_MS) {
+      lastMeasureTime = now;
+      takeMeasurement();
+    }
+  }
+
   delay(50);
 }
 
 void handleButton() {
-  // Toggle button between "Warming Up Mode" and "Measuring Mode"
+  // Switches between "Measuring Mode" and "Warming Up Mode"
   bool currentButtonState = digitalRead(PIN_BUTTON);
 
   if (lastButtonState == HIGH && currentButtonState == LOW) {
     delay(50); // debounce
 
     if (!measuringMode) {
-      // Calibrate all baselines before measuring mode
+      // Calibrate all active sensors before measuring mode
       Serial.println("Calibrating baselines in clean air...");
-      v0_hcho = getAverageVoltage(PIN_HCHO);
-      v0_voc  = getAverageVoltage(PIN_VOC);
-      v0_nh3  = getAverageVoltage(PIN_NH3);
 
-      Serial.print("V0 HCHO: "); Serial.print(v0_hcho, 3); Serial.println(" V");
+      v0_voc = getAverageVoltage(PIN_VOC);
       Serial.print("V0 VOC:  "); Serial.print(v0_voc,  3); Serial.println(" V");
+      checkVoltage(v0_voc, "VOC");
+      checkBaseline(v0_voc, VOC_BASELINE_MIN, VOC_BASELINE_MAX, "VOC");
+
+      v0_nh3 = getAverageVoltage(PIN_NH3);
       Serial.print("V0 NH3:  "); Serial.print(v0_nh3,  3); Serial.println(" V");
+      checkVoltage(v0_nh3, "NH3");
+      checkBaseline(v0_nh3, NH3_BASELINE_MIN, NH3_BASELINE_MAX, "NH3");
+
+      if (hchoEnabled) {
+        v0_hcho = getAverageVoltage(PIN_HCHO);
+        Serial.print("V0 HCHO: "); Serial.print(v0_hcho, 3); Serial.println(" V");
+        checkVoltage(v0_hcho, "HCHO");
+        checkBaseline(v0_hcho, HCHO_BASELINE_MIN, HCHO_BASELINE_MAX, "HCHO");
+      }
+
 
       measuringMode = true;
+      lastMeasureTime = 0;   // trigger an immediate first reading
       digitalWrite(PIN_LED, HIGH);
       Serial.println("=== MEASURING MODE ===");
     } else {
@@ -65,8 +126,7 @@ void handleButton() {
 }
 
 float getAverageVoltage(int pin) {
-  // Average 64 samples 
-  // TODO: add in a better mechanism than average to reduce outlier
+  // Average 64 samples
   long sum = 0;
   for (int i = 0; i < 64; i++) {
     sum += analogRead(pin);
@@ -74,6 +134,129 @@ float getAverageVoltage(int pin) {
   }
   return (sum / 64.0) * (3.3 / 4095.0);
 }
+
+bool checkVoltage(float voltage, const char* name) {
+  // Returns false and prints a fault message when voltage is outside the plausible
+  // operating range of the sensor (same thresholds for all sensors on the 3.3 V rail).
+  if (voltage < VOLTAGE_FAULT_LOW) {
+    Serial.print("[FAULT] "); Serial.print(name);
+    Serial.println(": near 0 V — open circuit or heater failure");
+    return false;
+  }
+  if (voltage > VOLTAGE_FAULT_HIGH) {
+    Serial.print("[FAULT] "); Serial.print(name);
+    Serial.println(": near rail — short circuit or ADC saturation");
+    return false;
+  }
+  return true;
+}
+
+
+bool checkBaseline(float voltage, float minV, float maxV, const char* name) {
+  // Warns when a calibration baseline falls outside the expected clean-air range
+  // from the datasheet stability curves.  Does not block measuring mode.
+  if (voltage < minV || voltage > maxV) {
+    Serial.print("[WARN]  "); Serial.print(name);
+    Serial.print(": baseline "); Serial.print(voltage, 3);
+    Serial.print(" V outside expected [");
+    Serial.print(minV, 1); Serial.print(", "); Serial.print(maxV, 1);
+    Serial.println("] V — sensor may need more warm-up or could be faulty");
+    return false;
+  }
+  return true;
+}
+
+void takeMeasurement() {
+  Serial.println("--- Sensors ---");
+
+  if (hdcReady) {
+    double temp, rh;
+    if (hdc.readTemperatureHumidityOnDemand(temp, rh, TRIGGERMODE_LP0)) {
+      Serial.print("Temp: "); Serial.print(temp, 1); Serial.print(" C  ");
+      Serial.print("RH: ");   Serial.print(rh, 1);   Serial.println(" %");
+    } else {
+      Serial.println("[FAULT] HDC3022: read failed (CRC error or I2C fault)");
+    }
+  } else {
+    Serial.println("HDC3022: not found");
+  }
+
+  float vs_voc = getAverageVoltage(PIN_VOC);
+  if (checkVoltage(vs_voc, "VOC")) {
+    float ppm = estimatePPM_VOC(vs_voc);
+    Serial.print("VOC:  "); Serial.print(vs_voc, 3); Serial.print(" V  ~");
+    Serial.print(ppm, 1); Serial.println(" ppm");
+  }
+
+  float vs_nh3 = getAverageVoltage(PIN_NH3);
+  if (checkVoltage(vs_nh3, "NH3")) {
+    float ppm = estimatePPM_NH3(vs_nh3);
+    Serial.print("NH3:  "); Serial.print(vs_nh3, 3); Serial.print(" V  ~");
+    Serial.print(ppm, 1); Serial.println(" ppm");
+  }
+
+  if (hchoEnabled) {
+    float vs_hcho = getAverageVoltage(PIN_HCHO);
+    if (checkVoltage(vs_hcho, "HCHO")) {
+      float ratio = vs_hcho / v0_hcho;
+      float ppm   = estimatePPM_HCHO(ratio);
+      Serial.print("HCHO: "); Serial.print(vs_hcho, 3); Serial.print(" V  ~");
+      Serial.print(ppm, 2); Serial.println(" ppm");
+    }
+  } else {
+    Serial.println("HCHO: disabled");
+  }
+}
+
+float estimatePPM_VOC(float voltage) {
+  // VOC: uses absolute voltage mapped to linearity curve (ethanol reference)
+  // From Figure 6: ~2.0V = 0ppm, ~4.0V = 100ppm
+  float curve[][2] = {
+    {2.0, 0.0},
+    {2.5, 20.0},
+    {3.0, 40.0},
+    {3.5, 70.0},
+    {4.0, 100.0}
+  };
+  int points = 5;
+
+  if (voltage <= curve[0][0]) return 0.0;
+  if (voltage >= curve[points-1][0]) return curve[points-1][1];
+
+  for (int i = 0; i < points - 1; i++) {
+    if (voltage >= curve[i][0] && voltage <= curve[i+1][0]) {
+      float t = (voltage - curve[i][0]) / (curve[i+1][0] - curve[i][0]);
+      return curve[i][1] + t * (curve[i+1][1] - curve[i][1]);
+    }
+  }
+  return -1;
+}
+
+float estimatePPM_NH3(float voltage) {
+  // NH3: uses absolute voltage mapped to linearity curve
+  // From Figure 6: ~1.2V = 0ppm, ~3.0V = 50ppm, flattens above 100ppm
+  float curve[][2] = {
+    {1.2, 0.0},
+    {2.0, 20.0},
+    {2.5, 35.0},
+    {3.0, 50.0},
+    {3.5, 75.0},
+    {4.0, 100.0}
+  };
+  int points = 6;
+
+  if (voltage <= curve[0][0]) return 0.0;
+  if (voltage >= curve[points-1][0]) return curve[points-1][1];
+
+  for (int i = 0; i < points - 1; i++) {
+    if (voltage >= curve[i][0] && voltage <= curve[i+1][0]) {
+      float t = (voltage - curve[i][0]) / (curve[i+1][0] - curve[i][0]);
+      return curve[i][1] + t * (curve[i+1][1] - curve[i][1]);
+    }
+  }
+  return -1;
+}
+
 
 float estimatePPM_HCHO(float ratio) {
   // HCHO: uses Vs/V0 ratio mapped to sensitivity curve from datasheet
@@ -103,28 +286,4 @@ float estimatePPM_HCHO(float ratio) {
   }
 
   return -1; // should never reach here
-}
-
-float estimatePPM_VOC(float voltage) {
-  // VOC: uses absolute voltage mapped to linearity curve (ethanol reference)
-  // From Figure 6: ~2.0V = 0ppm, ~4.0V = 100ppm
-  float curve[][2] = {
-    {2.0, 0.0},
-    {2.5, 20.0},
-    {3.0, 40.0},
-    {3.5, 70.0},
-    {4.0, 100.0}
-  };
-  int points = 5;
-
-  if (voltage <= curve[0][0]) return 0.0;
-  if (voltage >= curve[points-1][0]) return curve[points-1][1];
-
-  for (int i = 0; i < points - 1; i++) {
-    if (voltage >= curve[i][0] && voltage <= curve[i+1][0]) {
-      float t = (voltage - curve[i][0]) / (curve[i+1][0] - curve[i][0]);
-      return curve[i][1] + t * (curve[i+1][1] - curve[i][1]);
-    }
-  }
-  return -1;
 }
