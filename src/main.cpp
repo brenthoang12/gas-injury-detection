@@ -1,4 +1,4 @@
-// TODO: add temperature sensor
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_HDC302x.h>
@@ -27,8 +27,12 @@
 #define VOLTAGE_FAULT_HIGH 3.2f
 
 Adafruit_HDC302x hdc = Adafruit_HDC302x();
-bool hdcReady    = false;
-bool hchoEnabled = false;
+bool hdcReady             = false;
+bool hchoEnabled          = false;
+bool checkVoltageEnabled  = false;
+
+// Set before flashing: true = raw voltage (V),  false = estimated PPM
+const bool outputVoltage = true;
 
 bool measuringMode    = false;
 bool lastButtonState  = HIGH;
@@ -125,6 +129,7 @@ void handleButton() {
   lastButtonState = currentButtonState;
 }
 
+
 float getAverageVoltage(int pin) {
   // Average 64 samples
   long sum = 0;
@@ -138,6 +143,7 @@ float getAverageVoltage(int pin) {
 bool checkVoltage(float voltage, const char* name) {
   // Returns false and prints a fault message when voltage is outside the plausible
   // operating range of the sensor (same thresholds for all sensors on the 3.3 V rail).
+  if (!checkVoltageEnabled) return true;
   if (voltage < VOLTAGE_FAULT_LOW) {
     Serial.print("[FAULT] "); Serial.print(name);
     Serial.println(": near 0 V — open circuit or heater failure");
@@ -167,45 +173,68 @@ bool checkBaseline(float voltage, float minV, float maxV, const char* name) {
 }
 
 void takeMeasurement() {
-  Serial.println("--- Sensors ---");
+  // Each sensor value is stored as a string: a number, or "NAN" on fault/disabled.
+  char tempStr[8], rhStr[8], vocStr[8], nh3Str[8], hchoStr[8];
 
+  // HDC302x — always physical units
   if (hdcReady) {
     double temp, rh;
     if (hdc.readTemperatureHumidityOnDemand(temp, rh, TRIGGERMODE_LP0)) {
-      Serial.print("Temp: "); Serial.print(temp, 1); Serial.print(" C  ");
-      Serial.print("RH: ");   Serial.print(rh, 1);   Serial.println(" %");
+      snprintf(tempStr, sizeof(tempStr), "%.1f", temp);
+      snprintf(rhStr,   sizeof(rhStr),   "%.1f", rh);
     } else {
-      Serial.println("[FAULT] HDC3022: read failed (CRC error or I2C fault)");
+      Serial.println("[FAULT] HDC3022: read failed (CRC or I2C fault)");
+      strcpy(tempStr, "NAN"); strcpy(rhStr, "NAN");
     }
   } else {
-    Serial.println("HDC3022: not found");
+    strcpy(tempStr, "NAN"); strcpy(rhStr, "NAN");
   }
 
+  // VOC
   float vs_voc = getAverageVoltage(PIN_VOC);
   if (checkVoltage(vs_voc, "VOC")) {
-    float ppm = estimatePPM_VOC(vs_voc);
-    Serial.print("VOC:  "); Serial.print(vs_voc, 3); Serial.print(" V  ~");
-    Serial.print(ppm, 1); Serial.println(" ppm");
+    if (outputVoltage) snprintf(vocStr, sizeof(vocStr), "%.3f", vs_voc);
+    else               snprintf(vocStr, sizeof(vocStr), "%.1f", estimatePPM_VOC(vs_voc));
+  } else {
+    strcpy(vocStr, "NAN");
   }
 
+  // NH3
   float vs_nh3 = getAverageVoltage(PIN_NH3);
   if (checkVoltage(vs_nh3, "NH3")) {
-    float ppm = estimatePPM_NH3(vs_nh3);
-    Serial.print("NH3:  "); Serial.print(vs_nh3, 3); Serial.print(" V  ~");
-    Serial.print(ppm, 1); Serial.println(" ppm");
+    if (outputVoltage) snprintf(nh3Str, sizeof(nh3Str), "%.3f", vs_nh3);
+    else               snprintf(nh3Str, sizeof(nh3Str), "%.1f", estimatePPM_NH3(vs_nh3));
+  } else {
+    strcpy(nh3Str, "NAN");
   }
 
+  // HCHO
   if (hchoEnabled) {
     float vs_hcho = getAverageVoltage(PIN_HCHO);
     if (checkVoltage(vs_hcho, "HCHO")) {
-      float ratio = vs_hcho / v0_hcho;
-      float ppm   = estimatePPM_HCHO(ratio);
-      Serial.print("HCHO: "); Serial.print(vs_hcho, 3); Serial.print(" V  ~");
-      Serial.print(ppm, 2); Serial.println(" ppm");
+      if (outputVoltage) snprintf(hchoStr, sizeof(hchoStr), "%.3f", vs_hcho);
+      else               snprintf(hchoStr, sizeof(hchoStr), "%.2f", estimatePPM_HCHO(vs_hcho / v0_hcho));
+    } else {
+      strcpy(hchoStr, "NAN");
     }
   } else {
-    Serial.println("HCHO: disabled");
+    strcpy(hchoStr, "NAN");
   }
+
+  // Build and emit frame.
+  // Format: $DATA,<millis_ms>,<temp_C>,<rh_pct>,<mode>,<voc>,<nh3>,<hcho>*<CRC>
+  // <mode> is 'V' (voltage) or 'P' (PPM)
+  char buf[96];
+  snprintf(buf, sizeof(buf), "DATA,%lu,%s,%s,%c,%s,%s,%s",
+           millis(), tempStr, rhStr, outputVoltage ? 'V' : 'P',
+           vocStr, nh3Str, hchoStr);
+
+  uint8_t crc = 0;
+  for (int i = 0; buf[i]; i++) crc ^= (uint8_t)buf[i];
+
+  Serial.print('$');
+  Serial.print(buf);
+  Serial.printf("*%02X\r\n", crc);
 }
 
 float estimatePPM_VOC(float voltage) {
