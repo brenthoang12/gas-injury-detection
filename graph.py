@@ -11,13 +11,15 @@ def mode_label(mode: str) -> str:
     labels = {"V": "Voltage (V)", "R": "Resistance (Ω)", "P": "Concentration (ppm)"}
     return labels.get(mode, mode)
 
-def save_sensor(time_s, values, title, y_label, color, out_path):
+def save_sensor(time_s, values, title, y_label, color, out_path, y_lim=None):
     fig, ax = plt.subplots(figsize=(12, 4))
     valid = values.notna()
     ax.plot(time_s[valid], values[valid], linewidth=0.8, color=color)
     ax.set_title(title)
     ax.set_xlabel("Time (s)")
     ax.set_ylabel(y_label)
+    if y_lim is not None:
+        ax.set_ylim(y_lim)
     ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
     ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%g"))
     ax.grid(True, linestyle="--", alpha=0.5)
@@ -41,19 +43,20 @@ def main(csv_path: str):
     out_dir = os.path.join(os.path.dirname(os.path.abspath(csv_path)), "graph")
     os.makedirs(out_dir, exist_ok=True)
 
+    volt_lim = (0, 3.3)
     sensors = [
-        ("temp_C", "Temperature",         "°C",        "tab:red"),
-        ("rh_pct", "Humidity",            "%RH",       "tab:blue"),
-        ("voc",    "VOC",                 gas_y_label, "tab:green"),
-        ("nh3",    "NH3",                 gas_y_label, "tab:orange"),
-        ("hcho",   "HCHO (Formaldehyde)", gas_y_label, "tab:purple"),
+        ("temp_C", "Temperature",         "°C",        "tab:red",    (17, 30)),
+        ("rh_pct", "Humidity",            "%RH",       "tab:blue",   (0, 100)),
+        ("voc",    "VOC",                 gas_y_label, "tab:green",  volt_lim),
+        ("nh3",    "NH3",                 gas_y_label, "tab:orange", volt_lim),
+        ("hcho",   "HCHO (Formaldehyde)", gas_y_label, "tab:purple", volt_lim),
     ]
 
-    for col, title, y_label, color in sensors:
+    for col, title, y_label, color, y_lim in sensors:
         filename = f"{dt_prefix}-{col.upper()}.png"
         out_path = os.path.join(out_dir, filename)
-        save_sensor(df["time_s"], df[col], title, y_label, color, out_path)
+        save_sensor(df["time_s"], df[col], title, y_label, color, out_path, y_lim)
 
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else "sample.csv" 
+    path = sys.argv[1] if len(sys.argv) > 1 else "readings_20260304_115812.csv" 
     main(path)
