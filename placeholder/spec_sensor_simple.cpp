@@ -45,13 +45,9 @@ void loop() {
     if (ppm_etoh < 0) ppm_etoh = 0;
     if (ppm_h2s  < 0) ppm_h2s  = 0;
 
-    Serial.print("[EtOH] Vgas: "); Serial.print(vgas_etoh, 4);
-    Serial.print(" V | Vref: ");   Serial.print(vref_etoh, 4);
-    Serial.print(" V | ppm: ");    Serial.println(ppm_etoh, 2);
-
-    Serial.print("[H2S]  Vgas: "); Serial.print(vgas_h2s, 4);
-    Serial.print(" V | Vref: ");   Serial.print(vref_h2s, 4);
-    Serial.print(" V | ppm: ");    Serial.println(ppm_h2s, 2);
+    Serial.print("[EtOH] "); Serial.print(ppm_etoh, 2); Serial.println(" ppm");
+    Serial.print("[H2S]  "); Serial.print(ppm_h2s,  2); Serial.println(" ppm");
+    Serial.println();
 
     delay(1000);
 }

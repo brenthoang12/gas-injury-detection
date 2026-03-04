@@ -2,6 +2,7 @@
 // TODO: add temperature compensation
 
 #include <Arduino.h>
+#include <Adafruit_HDC302x.h>
 
 #define PIN_ETOH_GAS  26
 #define PIN_ETOH_REF  27
@@ -13,7 +14,7 @@
 #define ETOH_SENSITIVITY_CODE  21.5   // nA/ppm - from sensor label
 #define ETOH_TIA_GAIN          249.0  // kV/A   
 
-#define H2S_SENSITIVITY_CODE   4.94   // nA/ppm - from sensor label [change here]
+#define H2S_SENSITIVITY_CODE   216.09 // nA/ppm - from sensor label
 #define H2S_TIA_GAIN           49.9   // kV/A   
 
 bool measuringMode = false;
@@ -28,6 +29,7 @@ void setup() {
     digitalWrite(PIN_LED, LOW);
     Serial.println("=== WARMING UP MODE ===");
     Serial.println("EtOH: warm up 15 min | H2S: warm up 60 min");
+    Serial.println("HCHO: warm up 5 min | NH3: warm up 5 min | NH3: warm up 5 min");
     Serial.println("Press button when ready to measure.");
 }
 
