@@ -33,10 +33,13 @@ void loop() {
 
     float ppm_h2s  = (vgas_h2s  - vref_h2s)  / m_h2s;
 
-    if (ppm_h2s  < 0) ppm_h2s  = 0;
+    if (ppm_h2s < 0)  ppm_h2s = 0;
+    if (ppm_h2s > 50) ppm_h2s = 50;
 
-    Serial.print("[H2S]  "); Serial.print(ppm_h2s,  2); Serial.println(" ppm");
-    Serial.println();
+    Serial.print("[H2S]  Vgas: "); Serial.print(vgas_h2s, 4);
+    Serial.print(" V | Vref: ");   Serial.print(vref_h2s, 4);
+    Serial.print(" V | Est: ");    Serial.print(ppm_h2s, 2);
+    Serial.println(" ppm");
 
     delay(1000);
 }
