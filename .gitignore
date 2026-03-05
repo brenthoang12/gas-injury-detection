@@ -5,5 +5,8 @@
 .vscode/ipch
 .venv/
 
+*.png
+
 sensor-documentation/
 graph/
+poisoning-test/

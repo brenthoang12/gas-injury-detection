@@ -36,7 +36,6 @@ CSV_DIR      = "."                       # directory for output CSV files
 
 FIELDS = ["wall_time", "millis_ms", "temp_C", "rh_pct", "mode", "voc", "nh3", "hcho"]
 
-
 # ── Frame parsing ─────────────────────────────────────────────────────────────
 
 def verify_checksum(line):

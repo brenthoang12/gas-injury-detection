@@ -51,9 +51,9 @@ float    getAverageVoltage(int pin);
 bool     checkVoltage(float voltage, const char* name);
 bool     checkBaseline(float voltage, float minV, float maxV, const char* name);
 void     takeMeasurement();
-float    estimatePPM_HCHO(float ratio);
-float    estimatePPM_VOC(float voltage);
-float    estimatePPM_NH3(float voltage);
+float    estimatePPM_HCHO(float ratio); // in work - datasheet in Chinese
+float    estimatePPM_VOC(float voltage); // in work - datasheet in Chinese
+float    estimatePPM_NH3(float voltage); // in work - datasheet in Chinese
 
 void setup() {
   Serial.begin(115200);

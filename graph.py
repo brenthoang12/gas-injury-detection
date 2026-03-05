@@ -58,5 +58,5 @@ def main(csv_path: str):
         save_sensor(df["time_s"], df[col], title, y_label, color, out_path, y_lim)
 
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else "readings_20260304_115812.csv" 
+    path = sys.argv[1] if len(sys.argv) > 1 else "readings_20260305_160323.csv" 
     main(path)
