@@ -45,11 +45,13 @@ def main(csv_path: str):
 
     volt_lim = (0, 3.3)
     sensors = [
-        ("temp_C", "Temperature",         "°C",        "tab:red",    (17, 30)),
-        ("rh_pct", "Humidity",            "%RH",       "tab:blue",   (0, 100)),
-        ("voc",    "VOC",                 gas_y_label, "tab:green",  volt_lim),
-        ("nh3",    "NH3",                 gas_y_label, "tab:orange", volt_lim),
-        ("hcho",   "HCHO (Formaldehyde)", gas_y_label, "tab:purple", volt_lim),
+        ("temp_C",   "Temperature",         "°C",        "tab:red",    (17, 30)),
+        ("rh_pct",   "Humidity",            "%RH",       "tab:blue",   (0, 100)),
+        ("voc",      "VOC",                 gas_y_label, "tab:green",  volt_lim),
+        ("nh3",      "NH3",                 gas_y_label, "tab:orange", volt_lim),
+        ("hcho",     "HCHO (Formaldehyde)", gas_y_label, "tab:purple", volt_lim),
+        ("h2s_ppm",  "H2S",                "ppm",       "tab:brown",  None),
+        ("etoh_ppm", "EtOH",               "ppm",       "tab:pink",   None),
     ]
 
     for col, title, y_label, color, y_lim in sensors:
