@@ -1,5 +1,7 @@
-// TODO: establish protocol for collecting sweat
-// TODO: implement temperature and humidity adjustment
+// TODO: Stabilization indicator 
+//       detect decreasing
+//       detect STABILIZING
+//       confirm stable
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -23,27 +25,19 @@
 #define ETOH_TIA_GAIN          249.0  // kV/A   
 
 
-// Expected clean-air baseline voltage ranges derived from datasheet long-term stability curves:
-//   SEN0566 VOC  (Fig 7): V0 ~1.9 V in clean air
-//   SEN0567 NH3  (Fig 7): V0 ~1.2 V in clean air
-//   SEN0563 HCHO (Fig 4): V0 ~1.7 V in clean air
-#define GLOBAL_BASELINE_MIN   0.01f
-#define VOC_BASELINE_MIN      1.0f
-#define VOC_BASELINE_MAX      2.8f
-#define NH3_BASELINE_MIN      0.5f
-#define NH3_BASELINE_MAX      2.2f
-#define HCHO_BASELINE_MIN     0.8f
-#define HCHO_BASELINE_MAX     2.5f
+// NOTE: This is only a naive check to see if MEMS sensor reading anomaly 
+//       MEMS sensors' baseline readings different each time the system is plugged in.
+//       However, if the system is continuously running within test. Baseline reading 
+//       repeatability can be achieved. The datasheet doesn't mention min and max readings 
+//       for MEMS sensor.
+#define MEMS_BASELINE_MIN   0.01f
+#define MEMS_BASELINE_MAX   3.20f
 
-// Sensor fault thresholds (3.3 V rail, ADC_11db attenuation):
-//   < FAULT_LOW  -> open circuit or heater failure
-//   > FAULT_HIGH -> short circuit or ADC saturation
-#define VOLTAGE_FAULT_LOW  0.01f
-#define VOLTAGE_FAULT_HIGH 3.2f
+#define SPEC_NOT_READY_V    3.29f  // Vgas at rail voltage indicates sensor not warmed up
+
 
 Adafruit_HDC302x hdc = Adafruit_HDC302x();
 bool hdcReady             = false;
-bool hchoEnabled          = true;
 bool checkVoltageEnabled  = true;
 
 // Set before flashing: true = raw voltage (V),  false = estimated PPM
@@ -61,8 +55,8 @@ unsigned long lastMeasureTime = 0;
 
 void     handleButton();
 float    getAverageVoltage(int pin);
-bool     checkVoltage(float voltage, const char* name);
-bool     checkBaseline(float voltage, float minV, float maxV, const char* name);
+bool     checkMemsVoltage(float voltage, const char* name);
+bool     checkMemsBaseline(float voltage, float minV, float maxV, const char* name);
 void     takeMeasurement();
 float    estimatePPM_HCHO(float ratio); // in work - datasheet in Chinese
 float    estimatePPM_VOC(float voltage); // in work - datasheet in Chinese
@@ -78,9 +72,6 @@ void setup() {
   digitalWrite(PIN_LED, LOW);
   Serial.println("=== WARMING UP MODE ===");
   Serial.println("Press button when ready to measure.");
-  if (!hchoEnabled) {
-    Serial.println("[INFO] HCHO sensor disabled (not installed).");
-  }
 
   Wire.begin(21, 22);
   hdcReady = hdc.begin(0x44, &Wire);
@@ -109,25 +100,35 @@ void handleButton() {
     delay(50); // debounce
 
     if (!measuringMode) {
+      // Check SPEC sensor readiness: Vgas at 3.30 V means sensor is not ready
+      float h2sVgasCheck  = getAverageVoltage(PIN_H2S_GAS);
+      if (h2sVgasCheck >= SPEC_NOT_READY_V) {
+        Serial.print("[WARN]  H2S SPEC sensor not ready: Vgas = ");
+        Serial.print(h2sVgasCheck, 4); Serial.println(" V (still at rail — allow more warm-up)");
+      }
+
+      float etohVgasCheck = getAverageVoltage(PIN_ETOH_GAS);
+      if (etohVgasCheck >= SPEC_NOT_READY_V) {
+        Serial.print("[WARN]  EtOH SPEC sensor not ready: Vgas = ");
+        Serial.print(etohVgasCheck, 4); Serial.println(" V (still at rail — allow more warm-up)");
+      }
+
       Serial.println("Calibrating baselines in clean air...");
 
       v0_voc = getAverageVoltage(PIN_VOC);
       Serial.print("V0 VOC:  "); Serial.print(v0_voc,  3); Serial.println(" V");
-      checkVoltage(v0_voc, "VOC");
-      checkBaseline(v0_voc, GLOBAL_BASELINE_MIN, VOC_BASELINE_MAX, "VOC");
+      checkMemsVoltage(v0_voc, "VOC");
+      checkMemsBaseline(v0_voc, MEMS_BASELINE_MIN, MEMS_BASELINE_MAX, "VOC");
 
       v0_nh3 = getAverageVoltage(PIN_NH3);
       Serial.print("V0 NH3:  "); Serial.print(v0_nh3,  3); Serial.println(" V");
-      checkVoltage(v0_nh3, "NH3");
-      checkBaseline(v0_nh3, GLOBAL_BASELINE_MIN, NH3_BASELINE_MAX, "NH3");
+      checkMemsVoltage(v0_nh3, "NH3");
+      checkMemsBaseline(v0_nh3, MEMS_BASELINE_MIN, MEMS_BASELINE_MAX, "NH3");
 
-      if (hchoEnabled) {
-        v0_hcho = getAverageVoltage(PIN_HCHO);
-        Serial.print("V0 HCHO: "); Serial.print(v0_hcho, 3); Serial.println(" V");
-        checkVoltage(v0_hcho, "HCHO");
-        checkBaseline(v0_hcho, GLOBAL_BASELINE_MIN, HCHO_BASELINE_MAX, "HCHO");
-      }
-
+      v0_hcho = getAverageVoltage(PIN_HCHO);
+      Serial.print("V0 HCHO: "); Serial.print(v0_hcho, 3); Serial.println(" V");
+      checkMemsVoltage(v0_hcho, "HCHO");
+      checkMemsBaseline(v0_hcho, MEMS_BASELINE_MIN, MEMS_BASELINE_MAX, "HCHO");
 
       measuringMode = true;
       lastMeasureTime = 0;   // trigger an immediate first reading
@@ -155,16 +156,16 @@ float getAverageVoltage(int pin) {
   return (sum / 64.0) * (3.3 / 4095.0);
 }
 
-bool checkVoltage(float voltage, const char* name) {
+bool checkMemsVoltage(float voltage, const char* name) {
   // Returns false and prints a fault message when voltage is outside the plausible
   // operating range of the sensor (same thresholds for all sensors on the 3.3 V rail).
   if (!checkVoltageEnabled) return true;
-  if (voltage < VOLTAGE_FAULT_LOW) {
+  if (voltage < MEMS_BASELINE_MIN) {
     Serial.print("[FAULT] "); Serial.print(name);
     Serial.println(": near 0 V — open circuit or heater failure");
     return false;
   }
-  if (voltage > VOLTAGE_FAULT_HIGH) {
+  if (voltage > MEMS_BASELINE_MAX) {
     Serial.print("[FAULT] "); Serial.print(name);
     Serial.println(": near rail — short circuit or ADC saturation");
     return false;
@@ -172,8 +173,7 @@ bool checkVoltage(float voltage, const char* name) {
   return true;
 }
 
-
-bool checkBaseline(float voltage, float minV, float maxV, const char* name) {
+bool checkMemsBaseline(float voltage, float minV, float maxV, const char* name) {
   // Warns when a calibration baseline falls outside the expected clean-air range
   // from the datasheet stability curves.  Does not block measuring mode.
   if (voltage < minV || voltage > maxV) {
@@ -208,7 +208,7 @@ void takeMeasurement() {
 
   // VOC
   float vs_voc = getAverageVoltage(PIN_VOC);
-  if (checkVoltage(vs_voc, "VOC")) {
+  if (checkMemsVoltage(vs_voc, "VOC")) {
     if (outputVoltage) snprintf(vocStr, sizeof(vocStr), "%.3f", vs_voc);
     else               snprintf(vocStr, sizeof(vocStr), "%.1f", estimatePPM_VOC(vs_voc));
   } else {
@@ -217,7 +217,7 @@ void takeMeasurement() {
 
   // NH3
   float vs_nh3 = getAverageVoltage(PIN_NH3);
-  if (checkVoltage(vs_nh3, "NH3")) {
+  if (checkMemsVoltage(vs_nh3, "NH3")) {
     if (outputVoltage) snprintf(nh3Str, sizeof(nh3Str), "%.3f", vs_nh3);
     else               snprintf(nh3Str, sizeof(nh3Str), "%.1f", estimatePPM_NH3(vs_nh3));
   } else {
@@ -225,14 +225,10 @@ void takeMeasurement() {
   }
 
   // HCHO
-  if (hchoEnabled) {
-    float vs_hcho = getAverageVoltage(PIN_HCHO);
-    if (checkVoltage(vs_hcho, "HCHO")) {
-      if (outputVoltage) snprintf(hchoStr, sizeof(hchoStr), "%.3f", vs_hcho);
-      else               snprintf(hchoStr, sizeof(hchoStr), "%.2f", estimatePPM_HCHO(vs_hcho / v0_hcho));
-    } else {
-      strcpy(hchoStr, "NAN");
-    }
+  float vs_hcho = getAverageVoltage(PIN_HCHO);
+  if (checkMemsVoltage(vs_hcho, "HCHO")) {
+    if (outputVoltage) snprintf(hchoStr, sizeof(hchoStr), "%.3f", vs_hcho);
+    else               snprintf(hchoStr, sizeof(hchoStr), "%.2f", estimatePPM_HCHO(vs_hcho / v0_hcho));
   } else {
     strcpy(hchoStr, "NAN");
   }
@@ -253,6 +249,7 @@ void takeMeasurement() {
   snprintf(etohVrefStr, sizeof(etohVrefStr), "%.4f", etohVref);
   snprintf(etohVgasStr, sizeof(etohVgasStr), "%.4f", etohVgas);
   snprintf(etohPpmStr,  sizeof(etohPpmStr),  "%.2f",  etohPpm);
+
 
   // Build and emit frame.
   // Format: $DATA,<millis_ms>,<temp_C>,<rh_pct>,<mode>,<voc>,<nh3>,<hcho>,
