@@ -10,3 +10,5 @@
 sensor-documentation/
 graph/
 poisoning-test/
+
+.DS_Store
