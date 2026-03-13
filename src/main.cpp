@@ -16,7 +16,7 @@
 
 #define PIN_ETOH_GAS  26
 #define PIN_ETOH_REF  27
-#define PIN_H2S_GAS   25
+#define PIN_H2S_GAS   4
 #define PIN_H2S_REF   14
 
 #define H2S_SENSITIVITY_CODE   216.09 // nA/ppm - from sensor label
@@ -30,7 +30,7 @@
 //       However, if the system is continuously running within test. Baseline reading 
 //       repeatability can be achieved. The datasheet doesn't mention min and max readings 
 //       for MEMS sensor.
-#define MEMS_BASELINE_MIN   0.01f
+#define MEMS_BASELINE_MIN   0.00f
 #define MEMS_BASELINE_MAX   3.20f
 
 #define SPEC_NOT_READY_V    3.29f  // Vgas at rail voltage indicates sensor not warmed up
