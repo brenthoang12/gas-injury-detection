@@ -4,12 +4,16 @@ import matplotlib.pyplot as plt
 
 from scipy.signal import savgol_filter
 
-def graph_feature(data: pd.DataFrame, col: str) -> None:
+def graph_feature(data: pd.DataFrame, col: str, outlier_col: str = None) -> None:
     plt.figure()
-    plt.plot(data["time_s"], data[col])
+    plt.plot(data["time_s"], data[col], label=col)
+    if outlier_col and outlier_col in data.columns:
+        outliers = data[data[outlier_col]]
+        plt.scatter(outliers["time_s"], outliers[col], color="red", s=20, zorder=5, label="outliers")
     plt.xlabel("Time (s)")
     plt.ylabel(col)
     plt.title(col)
+    plt.legend()
     plt.tight_layout()
     plt.show()
 
@@ -22,6 +26,7 @@ def detect_outliers_zscore(series: pd.Series, window: int = 20, threshold: float
     rolling_std  = series.rolling(window=window, center=True, min_periods=1).std()
     z_score = (series - rolling_mean) / rolling_std.replace(0, np.nan)
     return z_score.abs() > threshold
+
 
 def detect_outliers_iqr(series: pd.Series, window: int = 20, k: float = 1.5) -> pd.Series:
     """
@@ -36,7 +41,9 @@ def detect_outliers_iqr(series: pd.Series, window: int = 20, k: float = 1.5) -> 
     upper = Q3 + k * IQR
     return (series < lower) | (series > upper)
 
-def handle_outliers(series: pd.Series, outlier_mask: pd.Series, method: str = "interpolate") -> pd.Series:
+
+def handle_outliers(series: pd.Series, outlier_mask: pd.Series, 
+                    method: str = "interpolate", max_gap: int = 30) -> pd.Series:
     """
     Replace outliers without discarding them.
     method="interpolate" : linear interpolation between clean neighbours
@@ -46,9 +53,9 @@ def handle_outliers(series: pd.Series, outlier_mask: pd.Series, method: str = "i
     cleaned[outlier_mask] = np.nan
 
     if method == "interpolate":
-        cleaned = cleaned.interpolate(method="linear", limit_direction="both")
+        cleaned = cleaned.interpolate(method="linear", limit=max_gap, limit_direction="both")
     elif method == "ffill":
-        cleaned = cleaned.ffill().bfill()  # bfill handles leading NaNs
+        cleaned = cleaned.ffill(limit=max_gap).bfill(limit=max_gap)
     else:
         raise ValueError(f"Unknown method: {method}. Use 'interpolate' or 'ffill'.")
 
@@ -62,15 +69,27 @@ def get_data(path: str) -> pd.DataFrame:
     t0 = df["wall_time"].iloc[0]
     df["time_s"] = (df["wall_time"] - t0).dt.total_seconds()
 
-    # Smoothen H2S
-    df["h2s_ra"] = df["h2s_ppm"].rolling(window=10, center=True).mean() # Rolling average
-    df["h2s_sf"] = savgol_filter(df["h2s_ppm"], window_length=11, polyorder=2) # Savitzky-Golay Filter
+    # --- Outlier detection ---
+    df["h2s_outlier_z"]   = detect_outliers_zscore(df["h2s_ppm"])
+    df["h2s_outlier_iqr"] = detect_outliers_iqr(df["h2s_ppm"])
+
+    # --- Handle outliers (interpolate or ffill) ---
+    df["h2s_clean_z"]   = handle_outliers(df["h2s_ppm"], df["h2s_outlier_z"],   method="interpolate")
+    df["h2s_clean_iqr"] = handle_outliers(df["h2s_ppm"], df["h2s_outlier_iqr"], method="interpolate")
+
+    # --- Smoothing on cleaned signal ---
+    df["h2s_sf_z"]   = savgol_filter(df["h2s_clean_z"],   window_length=11, polyorder=2)
+    df["h2s_sf_iqr"] = savgol_filter(df["h2s_clean_iqr"], window_length=51, polyorder=2)
+
     return df
 
 def main():
-    path = "testrun-h2s-st/readings_20260312_120603.csv"
+    path = "testrun-h2s-st-2/readings_20260312_144332.csv"
     df = get_data(path)
-    graph_feature(df, "h2s_sf")
+
+    # Cleaned + smoothed
+    graph_feature(df, "h2s_sf_z")
+    graph_feature(df, "h2s_sf_iqr")
 
 
 if __name__ == "__main__":
