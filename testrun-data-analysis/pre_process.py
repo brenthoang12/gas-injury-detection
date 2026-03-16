@@ -17,6 +17,8 @@ def graph_feature(data: pd.DataFrame, col: str, outlier_col: str = None) -> None
     plt.tight_layout()
     plt.show()
 
+
+
 def detect_outliers_zscore(series: pd.Series, window: int = 20, threshold: float = 3.0) -> pd.Series:
     """
     Rolling Z-score outlier detection.
@@ -69,28 +71,72 @@ def get_data(path: str) -> pd.DataFrame:
     t0 = df["wall_time"].iloc[0]
     df["time_s"] = (df["wall_time"] - t0).dt.total_seconds()
 
-    # --- Outlier detection ---
+    # Outlier detection 
     df["h2s_outlier_z"]   = detect_outliers_zscore(df["h2s_ppm"])
     df["h2s_outlier_iqr"] = detect_outliers_iqr(df["h2s_ppm"])
 
-    # --- Handle outliers (interpolate or ffill) ---
-    df["h2s_clean_z"]   = handle_outliers(df["h2s_ppm"], df["h2s_outlier_z"],   method="interpolate")
+    # Handle outlier
     df["h2s_clean_iqr"] = handle_outliers(df["h2s_ppm"], df["h2s_outlier_iqr"], method="interpolate")
+    df["h2s_outlier_clean"] =  detect_outliers_iqr(df["h2s_clean_iqr"])
 
-    # --- Smoothing on cleaned signal ---
-    df["h2s_sf_z"]   = savgol_filter(df["h2s_clean_z"],   window_length=11, polyorder=2)
+    # Smooth readings
     df["h2s_sf_iqr"] = savgol_filter(df["h2s_clean_iqr"], window_length=51, polyorder=2)
 
     return df
 
+def get_trimmed_data(path: str, start_s: float = 0.0, end_s: float = None) -> pd.DataFrame:
+    df = pd.read_csv(path)
+
+    # Add time (s)
+    df["wall_time"] = pd.to_datetime(df["wall_time"])
+    t0 = df["wall_time"].iloc[0]
+    df["time_s"] = (df["wall_time"] - t0).dt.total_seconds()
+
+    # Time filter
+    mask = pd.Series(True, index=df.index)
+    mask &= df["time_s"] >= start_s
+    if end_s is not None:
+        mask &= df["time_s"] <= end_s
+    df = df[mask].reset_index(drop=True)  
+
+    # Outlier detection
+    df["h2s_outlier_z"]   = detect_outliers_zscore(df["h2s_ppm"])
+    df["h2s_outlier_iqr"] = detect_outliers_iqr(df["h2s_ppm"])
+
+    # Handle outliers
+    df["h2s_clean_iqr"] = handle_outliers(df["h2s_ppm"], df["h2s_outlier_iqr"], method="interpolate")
+    df["h2s_outlier_clean"] = detect_outliers_iqr(df["h2s_clean_iqr"])
+
+    # Smooth readings
+    df["h2s_sf_iqr"] = savgol_filter(df["h2s_clean_iqr"], window_length=51, polyorder=2)
+
+    return df  
+
+
+def graph_outlier_flag(data: pd.DataFrame, outlier_col: str) -> None:
+    """Plot a binary yes/no outlier flag over time."""
+    plt.figure()
+    plt.plot(data["time_s"], data[outlier_col].astype(int), drawstyle="steps-post", linewidth=1)
+    plt.yticks([0, 1], ["No", "Yes"])
+    plt.xlabel("Time (s)")
+    plt.ylabel("Outlier")
+    plt.title(f"Outlier flag: {outlier_col}")
+    plt.tight_layout()
+    plt.show()
+
 def main():
     path = "testrun-h2s-st-2/readings_20260312_144332.csv"
-    df = get_data(path)
+    df = get_trimmed_data(path, 0, 650)
 
-    # Cleaned + smoothed
-    graph_feature(df, "h2s_sf_z")
+    # print(df.head())
+
+    for col in ["h2s_outlier_z", "h2s_outlier_iqr"]:
+        count = df[col].sum()
+        total = len(df)
+        print(f"{col}: {count} outliers / {total} total ({100 * count / total:.1f}%)")
+    
+    graph_outlier_flag(df, "h2s_clean_iqr")
     graph_feature(df, "h2s_sf_iqr")
-
 
 if __name__ == "__main__":
     main()
