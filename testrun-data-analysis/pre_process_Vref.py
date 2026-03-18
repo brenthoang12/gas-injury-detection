@@ -5,7 +5,16 @@ import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter, butter, filtfilt
 
 H2S_SENSITIVITY_CODE = 216.09
-H2S_TIA_GAIN = 49.9   
+ETOH_SENSITIVITY_CODE = 21.5
+
+H2S_TIA_GAIN = 49.9  
+ETOH_TIA_GAIN = 249.0
+
+M_H2S = H2S_SENSITIVITY_CODE * H2S_TIA_GAIN * 1e-6
+M_ETOH = ETOH_SENSITIVITY_CODE * ETOH_TIA_GAIN * 1e-6
+
+H2S_OFFSET_PPM = 15.9215 # from offset_h2s.py
+ETOH_OFFSET_PPM = 19.5510 # from offset_etoh.py
 
 def graph_feature(data: pd.DataFrame, col: str, outlier_col: str = None) -> None:
     plt.figure()
@@ -51,8 +60,6 @@ def graph_features(data: pd.DataFrame, cols: list[str], outlier_cols: list[str] 
     plt.tight_layout()
     plt.show()
 
-def detect_outliers_roc() -> bool:
-    return False
 
 def detect_outliers_zscore(series: pd.Series, window: int = 20, threshold: float = 3.0) -> pd.Series:
     """
@@ -79,32 +86,87 @@ def detect_outliers_iqr(series: pd.Series, window: int = 20, k: float = 1.5) -> 
     return (series < lower) | (series > upper)
 
 
-def handle_outliers(series: pd.Series, outlier_mask: pd.Series, 
-                    method: str = "interpolate", max_gap: int = 30) -> pd.Series:
+def detect_outliers_roc(series: pd.Series, window: int = 5, threshold: float = None, z_thresh: float = 3.0) -> pd.Series:
     """
-    Replace outliers without discarding them.
+    Rate-of-change outlier detection.
+    Flags samples where the change from the previous sample is abnormally large.
+
+    window    : rolling window to compute expected rate of change
+    threshold : fixed max allowed change per sample (ppm/s). If None, derived automatically.
+    z_thresh  : if threshold=None, flags points where ROC exceeds z_thresh std devs from rolling mean ROC
+    """
+    roc = series.diff().abs()  # absolute change between consecutive samples
+
+    if threshold is not None:
+        # fixed threshold — flag anything changing faster than this per sample
+        return roc > threshold
+    else:
+        # adaptive threshold — flag where ROC is unusually large relative to local behaviour
+        rolling_mean_roc = roc.rolling(window=window, center=True, min_periods=1).mean()
+        rolling_std_roc  = roc.rolling(window=window, center=True, min_periods=1).std()
+        z_score = (roc - rolling_mean_roc) / rolling_std_roc.replace(0, np.nan)
+        return z_score > z_thresh
+
+
+def handle_outliers(series: pd.Series, outlier_mask: pd.Series,
+                    method: str = "interpolate", max_gap: int = 30,
+                    roc_window: int = 5) -> pd.Series:
+    """
     method="interpolate" : linear interpolation between clean neighbours
-    method="ffill"       : carry forward the last clean reading (flat prediction)
+    method="ffill"       : carry forward last clean reading
+    method="roc"         : extrapolate using recent rate of change
+    roc_window           : how many clean samples to average slope from
     """
     cleaned = series.copy()
     cleaned[outlier_mask] = np.nan
 
     if method == "interpolate":
         cleaned = cleaned.interpolate(method="linear", limit=max_gap, limit_direction="both")
+
     elif method == "ffill":
         cleaned = cleaned.ffill(limit=max_gap).bfill(limit=max_gap)
+
+    elif method == "roc":
+        values = cleaned.to_numpy(dtype=float)
+        for i in range(len(values)):
+            if not np.isnan(values[i]):
+                continue
+
+            # find clean samples before this gap
+            before_idx = [j for j in range(i - 1, -1, -1) if not np.isnan(values[j])]
+            if len(before_idx) < 2:
+                continue  # not enough history, skip
+
+            # compute average slope from last roc_window clean samples
+            anchor_indices = before_idx[:roc_window]
+            slopes = [
+                values[anchor_indices[k]] - values[anchor_indices[k + 1]]
+                for k in range(len(anchor_indices) - 1)
+            ]
+            avg_slope = np.mean(slopes)
+
+            # fill forward up to max_gap
+            gap_count = 0
+            j = i
+            while j < len(values) and np.isnan(values[j]) and gap_count < max_gap:
+                steps_from_anchor = j - before_idx[0]
+                values[j] = values[before_idx[0]] + avg_slope * steps_from_anchor
+                gap_count += 1
+                j += 1
+
+        cleaned = pd.Series(values, index=series.index)
+
     else:
-        raise ValueError(f"Unknown method: {method}. Use 'interpolate' or 'ffill'.")
+        raise ValueError(f"Unknown method: {method}. Use 'interpolate', 'ffill', or 'roc'.")
 
     return cleaned
 
+
 def trimmed_data(df: pd.DataFrame, start_s: float = 0.0, end_s: float = None) -> pd.DataFrame:
-    mask = pd.Series(True, index=df.index)
-    mask &= df["time_s"] >= start_s
+    mask = df["time_s"] >= start_s
     if end_s is not None:
         mask &= df["time_s"] <= end_s
-    df = df[mask].reset_index(drop=True)  
-    return df
+    return df[mask].reset_index(drop=True)
 
 
 def lowpass_filter(series: pd.Series, cutoff_hz: float = 0.009, fs: float = 1.0, order: int = 4) -> pd.Series:
@@ -119,45 +181,43 @@ def lowpass_filter(series: pd.Series, cutoff_hz: float = 0.009, fs: float = 1.0,
     b, a = butter(order, normal_cutoff, btype="low", analog=False)
     return pd.Series(filtfilt(b, a, series), index=series.index)
 
-
-def main():
-    path = "testrun-h2s-st-2/readings_20260312_144332.csv"
+def load_data(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
-    # df2 = pd.read_csv("testrun-h2s-st/readings_20260312_120603.csv")
-
-
     df["wall_time"] = pd.to_datetime(df["wall_time"])
     t0 = df["wall_time"].iloc[0]
     df["time_s"] = (df["wall_time"] - t0).dt.total_seconds()
+    return df
 
-    df = trimmed_data(df, 100)
-    df = df.drop(columns=['h2s_ppm'])
+def main():
+    # Load data
+    path = "testrun-h2s-st-2/readings_20260312_144332.csv"
+    df = load_data(path)
 
-    min_Vref = df['h2s_vref'].min()
-    max_Vref = df['h2s_vref'].max()
-    print(max_Vref)
-    print(min_Vref)
-    dif = (max_Vref - min_Vref) / max_Vref
-    average_mm = (min_Vref + max_Vref) / 2
-    average_true = df['h2s_vref'].sum()/len(df)
-    print(average_mm)
-    print(average_true)
-
-    df['h2s_vref'] = average_true
-
-    M_H2S = H2S_SENSITIVITY_CODE * H2S_TIA_GAIN * 1e-6
-
-    df['h2s_ppm'] = (df['h2s_vgas'] - df['h2s_vref']) / M_H2S
+    # Clean H2S data
+    print(f"Vref  min={df['h2s_vref'].min()}  max={df['h2s_vref'].max()}  mean={df['h2s_vref'].mean()}")
+    df['h2s_vref'] = df['h2s_vref'].mean()
+    df['h2s_ppm'] = ((df['h2s_vgas'] - df['h2s_vref']) / M_H2S - H2S_OFFSET_PPM).clip(lower=0)
 
     df['h2s_outlier_iqr'] = detect_outliers_iqr(df["h2s_ppm"])
     df['h2s_clean_iqr'] = handle_outliers(df["h2s_ppm"], df["h2s_outlier_iqr"], method="interpolate")
     df['h2s_sf_iqr'] = savgol_filter(df["h2s_clean_iqr"], window_length=51, polyorder=2)
 
-    df['h2s_lp'] = lowpass_filter(df['h2s_clean_iqr'], cutoff_hz=0.01)
+    df['h2s_lp'] = lowpass_filter(df['h2s_sf_iqr'], cutoff_hz=0.005)
 
-    graph_features(df, ["h2s_sf_iqr", "h2s_lp"])
-
+    # Clean ETOH data
+    print(f"Vref  min={df['etoh_vref'].min()}  max={df['etoh_vref'].max()}  mean={df['etoh_vref'].mean()}")
+    df['etoh_vref'] = df['etoh_vref'].mean()
+    df['etoh_ppm'] = ((df['etoh_vgas'] - df['etoh_vref']) / M_ETOH - ETOH_OFFSET_PPM).clip(lower=0)
     
+    df['etoh_outlier_iqr'] = detect_outliers_iqr(df["etoh_ppm"])
+    df['etoh_clean_iqr'] = handle_outliers(df["etoh_ppm"], df["etoh_outlier_iqr"], method="interpolate")
+    df['etoh_sf_iqr'] = savgol_filter(df["etoh_clean_iqr"], window_length=51, polyorder=2)
+
+    df['etoh_lp'] = lowpass_filter(df['etoh_sf_iqr'], cutoff_hz=0.005)
+
+    # Graph
+    graph_features(df, ["h2s_sf_iqr", "h2s_lp"])
+    graph_features(df, ["etoh_sf_iqr", "etoh_lp"])
 
 
 if __name__ == "__main__":
