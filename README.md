@@ -4,7 +4,7 @@ H2S and Humidity
 
 Test 1 was unsuccessful as 
 
-1.5 ppm  H2s
+1.5 ppm  H2s 250 s
 
 5.0 ppm  H2s
 

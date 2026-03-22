@@ -16,6 +16,10 @@ M_ETOH = ETOH_SENSITIVITY_CODE * ETOH_TIA_GAIN * 1e-6
 H2S_OFFSET_PPM = 15.9215 # from offset_h2s.py
 ETOH_OFFSET_PPM = 19.5510 # from offset_etoh.py
 
+TRUE_PPM_H2S = 1.5   
+MEASURED_H2S   = 1.0   
+H2S_SCALE  = TRUE_PPM_H2S / MEASURED_H2S  
+
 def graph_feature(data: pd.DataFrame, col: str, outlier_col: str = None) -> None:
     plt.figure()
     plt.plot(data["time_s"], data[col], label=col)
@@ -61,7 +65,7 @@ def graph_features(data: pd.DataFrame, cols: list[str], outlier_cols: list[str] 
     plt.show()
 
 
-def detect_outliers_zscore(series: pd.Series, window: int = 20, threshold: float = 3.0) -> pd.Series:
+def detect_outliers_zscore(series: pd.Series, window: int = 20, threshold: float = 2.5) -> pd.Series:
     """
     Rolling Z-score outlier detection.
     Returns boolean Series: True = outlier.
@@ -86,7 +90,7 @@ def detect_outliers_iqr(series: pd.Series, window: int = 20, k: float = 1.5) -> 
     return (series < lower) | (series > upper)
 
 
-def detect_outliers_roc(series: pd.Series, window: int = 5, threshold: float = None, z_thresh: float = 3.0) -> pd.Series:
+def detect_outliers_roc(series: pd.Series, window: int = 20, threshold: float = None, z_thresh: float = 2.0) -> pd.Series:
     """
     Rate-of-change outlier detection.
     Flags samples where the change from the previous sample is abnormally large.
@@ -189,22 +193,32 @@ def load_data(path: str) -> pd.DataFrame:
     return df
 
 def main():
-    # Load data
-    path = "testrun-h2s-st-2/readings_20260312_144332.csv"
-    df = load_data(path)
+    # ---- Load data
+    path_h2s_0 = "testrun-h2s-st-2/readings_20260312_144332.csv"
+    path_h2s_1 = "testrun-h2s-st/readings_20260312_120603.csv"
+    path_voc = "testrun-voc-st/readings_20260312_151908.csv"
+    df = load_data(path_voc)
+    # df = trimmed_data(df, 1400)
 
-    # Clean H2S data
+    # ---- Clean H2S data
     print(f"Vref  min={df['h2s_vref'].min()}  max={df['h2s_vref'].max()}  mean={df['h2s_vref'].mean()}")
     df['h2s_vref'] = df['h2s_vref'].mean()
     df['h2s_ppm'] = ((df['h2s_vgas'] - df['h2s_vref']) / M_H2S - H2S_OFFSET_PPM).clip(lower=0)
+    df['h2s_ppm'] = df['h2s_ppm'] * H2S_SCALE
 
+    df['h2s_outlier_roc'] = detect_outliers_roc(df["h2s_ppm"])
+    print(f"ROC  outliers: {df['h2s_outlier_roc'].sum()} / {len(df)} ({100 * df['h2s_outlier_roc'].sum() / len(df):.1f}%)")
+    df['h2s_clean_roc'] = handle_outliers(df["h2s_ppm"], df["h2s_outlier_roc"], method="interpolate")
+    df['h2s_sf_roc'] = savgol_filter(df["h2s_clean_roc"], window_length=51, polyorder=2)
+    
     df['h2s_outlier_iqr'] = detect_outliers_iqr(df["h2s_ppm"])
+    print(f"IQR  outliers: {df['h2s_outlier_iqr'].sum()} / {len(df)} ({100 * df['h2s_outlier_iqr'].sum() / len(df):.1f}%)")
     df['h2s_clean_iqr'] = handle_outliers(df["h2s_ppm"], df["h2s_outlier_iqr"], method="interpolate")
     df['h2s_sf_iqr'] = savgol_filter(df["h2s_clean_iqr"], window_length=51, polyorder=2)
 
     df['h2s_lp'] = lowpass_filter(df['h2s_sf_iqr'], cutoff_hz=0.005)
 
-    # Clean ETOH data
+    # ---- Clean ETOH data
     print(f"Vref  min={df['etoh_vref'].min()}  max={df['etoh_vref'].max()}  mean={df['etoh_vref'].mean()}")
     df['etoh_vref'] = df['etoh_vref'].mean()
     df['etoh_ppm'] = ((df['etoh_vgas'] - df['etoh_vref']) / M_ETOH - ETOH_OFFSET_PPM).clip(lower=0)
@@ -215,8 +229,9 @@ def main():
 
     df['etoh_lp'] = lowpass_filter(df['etoh_sf_iqr'], cutoff_hz=0.005)
 
-    # Graph
-    graph_features(df, ["h2s_sf_iqr", "h2s_lp"])
+    # ---- Graph
+    # graph_feature(df, "h2s_lp", 'h2s_outlier_roc')
+    # graph_features(df, ["h2s_sf_iqr", "h2s_lp"])
     graph_features(df, ["etoh_sf_iqr", "etoh_lp"])
 
 
