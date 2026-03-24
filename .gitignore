@@ -7,6 +7,7 @@
 
 *.png
 
+venv312/
 sensor-documentation/
 graph/
 poisoning-test/

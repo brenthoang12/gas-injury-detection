@@ -198,9 +198,10 @@ def main():
     path_h2s_1 = "testrun-h2s-st/readings_20260312_120603.csv"
     path_voc = "testrun-voc-st/readings_20260312_151908.csv"
     df = load_data(path_voc)
-    # df = trimmed_data(df, 1400)
+    df = trimmed_data(df, 1400)
 
     # ---- Clean H2S data
+
     print(f"Vref  min={df['h2s_vref'].min()}  max={df['h2s_vref'].max()}  mean={df['h2s_vref'].mean()}")
     df['h2s_vref'] = df['h2s_vref'].mean()
     df['h2s_ppm'] = ((df['h2s_vgas'] - df['h2s_vref']) / M_H2S - H2S_OFFSET_PPM).clip(lower=0)
@@ -229,10 +230,12 @@ def main():
 
     df['etoh_lp'] = lowpass_filter(df['etoh_sf_iqr'], cutoff_hz=0.005)
 
+    
+
     # ---- Graph
-    # graph_feature(df, "h2s_lp", 'h2s_outlier_roc')
+    graph_feature(df, "etoh_lp")
     # graph_features(df, ["h2s_sf_iqr", "h2s_lp"])
-    graph_features(df, ["etoh_sf_iqr", "etoh_lp"])
+    # graph_features(df, ["etoh_sf_iqr", "etoh_lp"])
 
 
 if __name__ == "__main__":

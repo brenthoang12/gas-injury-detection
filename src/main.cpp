@@ -7,17 +7,17 @@
 #include <Wire.h>
 #include <Adafruit_HDC302x.h>
 
-#define PIN_BUTTON  32
+#define PIN_BUTTON  4
 #define PIN_LED     2
 
 #define PIN_HCHO    39
 #define PIN_VOC     35
 #define PIN_NH3     34
 
-#define PIN_ETOH_GAS  26
-#define PIN_ETOH_REF  27
-#define PIN_H2S_GAS   4
-#define PIN_H2S_REF   14
+#define PIN_ETOH_GAS  33
+#define PIN_ETOH_REF  32
+#define PIN_H2S_GAS  27
+#define PIN_H2S_REF   26
 
 #define H2S_SENSITIVITY_CODE   216.09 // nA/ppm - from sensor label
 #define H2S_TIA_GAIN           49.9   // kV/A
