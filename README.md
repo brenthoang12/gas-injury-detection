@@ -27,3 +27,7 @@ C4H8 and air
 
 VOC and Humidity 
 
+
+**Sweat**
+650s NH3 and HCHO second order affect
+2100s bag open
