@@ -24,6 +24,7 @@ Frame format emitted by the ESP32:
     - h2s_*/etoh_* fields are always emitted: vref and vgas in V (4 dp), ppm (2 dp).
 
 Toggle output mode on the ESP32 by sending 'v' (voltage) or 'p' (PPM) over serial.
+
 """
 
 import argparse

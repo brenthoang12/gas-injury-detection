@@ -14,8 +14,8 @@
 #define PIN_VOC     35
 #define PIN_NH3     34
 
-#define PIN_ETOH_GAS  33
-#define PIN_ETOH_REF  32
+#define PIN_ETOH_GAS  25
+#define PIN_ETOH_REF  33
 #define PIN_H2S_GAS  27
 #define PIN_H2S_REF   26
 
