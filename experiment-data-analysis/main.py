@@ -12,8 +12,9 @@ from filter import (
     handle_outliers, lowpass_filter,
 )
 
-EXPERIMENT_PATH_SWEAT = "20260325-experiment/sweat.csv"
+EXPERIMENT_PATH_SWEAT = "20260326-experiment/sweat.csv"
 EXPERIMENT_PATH_BLOOD = "20260326-experiment/1.5blood_sample_1.csv"
+EXPERIMENT_PATH_CLEAN = "20260325-experiment/zip_lock_clean.csv"
 TRIM_START_S    = 0.0
 
 MEMS_COLS = ["voc", "nh3", "hcho"]

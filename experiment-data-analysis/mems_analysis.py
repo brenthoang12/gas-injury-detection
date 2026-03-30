@@ -30,6 +30,12 @@ DATASETS = [
 
 TYPE_COLORS = {"sweat": "#1D9E75", "blood": "#E84040", "mixed": "#9B59B6"}
 
+DATASETS_USED = [
+    {"label": "sweat (mar25)",        "path": "20260325-experiment/sweat.csv",             "type": "sweat"},
+    {"label": "blood #1 (mar26)",     "path": "20260326-experiment/1.5blood_sample_1.csv", "type": "blood"},
+    {"label": "2blood+sweat (mar26)", "path": "20260326-experiment/2blood1sweat.csv",       "type": "mixed"},
+]
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -47,8 +53,24 @@ def smooth(series: pd.Series, window: int = 21) -> pd.Series:
     return pd.Series(savgol_filter(series, window_length=wl, polyorder=2), index=series.index)
 
 
-def compute_metrics(df: pd.DataFrame, baseline_s: float = BASELINE_S) -> dict:
-    """Return a dict keyed by channel with peak_delta, auc_delta, time_to_peak."""
+def min_post_baseline_duration(baseline_s: float = BASELINE_S) -> float:
+    """Return the shortest post-baseline recording duration across all datasets."""
+    durations = []
+    for ds in DATASETS_USED:
+        df = load(ds["path"])
+        post = df["time_s"][df["time_s"] > baseline_s]
+        if len(post):
+            durations.append(post.max() - post.min())
+    return min(durations) if durations else float("inf")
+
+
+def compute_metrics(df: pd.DataFrame, baseline_s: float = BASELINE_S,
+                    roc_window_s: float = None) -> dict:
+    """Return a dict keyed by channel with peak_delta, auc_delta, time_to_peak, avg_roc.
+
+    roc_window_s: cap the RoC window to this many seconds after baseline so all
+                  experiments are compared over the same duration.
+    """
     results = {}
     for col in MEMS_COLS:
         s = smooth(df[col])
@@ -56,16 +78,30 @@ def compute_metrics(df: pd.DataFrame, baseline_s: float = BASELINE_S) -> dict:
         baseline_mean = s[baseline_mask].mean() if baseline_mask.any() else s.iloc[0]
 
         delta = s - baseline_mean
-        peak_idx   = delta.idxmax()
-        peak_delta = delta[peak_idx]
+        peak_idx     = delta.idxmax()
+        peak_delta   = delta[peak_idx]
         time_to_peak = df["time_s"][peak_idx]
-        auc_delta = float(np.trapezoid(delta.clip(lower=0), df["time_s"]))
+        auc_delta    = float(np.trapezoid(delta.clip(lower=0), df["time_s"]))
+
+        # average rate of change: mean of |ds/dt| capped at roc_window_s
+        t0_post   = df["time_s"][df["time_s"] > baseline_s].min()
+        roc_end   = (t0_post + roc_window_s) if roc_window_s is not None else float("inf")
+        post_mask = (df["time_s"] > baseline_s) & (df["time_s"] <= roc_end)
+        s_post    = s[post_mask]
+        t_post    = df["time_s"][post_mask]
+        if len(s_post) > 1:
+            dt      = t_post.diff().iloc[1:]
+            ds      = s_post.diff().iloc[1:]
+            avg_roc = (ds / dt).abs().mean()
+        else:
+            avg_roc = float("nan")
 
         results[col] = {
             "baseline_mean": baseline_mean,
             "peak_delta":    peak_delta,
             "auc_delta":     auc_delta,
             "time_to_peak":  time_to_peak,
+            "avg_roc":       avg_roc,
         }
     return results
 
@@ -77,7 +113,7 @@ def plot_timeseries() -> None:
     fig, axes = plt.subplots(len(MEMS_COLS), 1, figsize=(13, 4 * len(MEMS_COLS)), sharex=False)
 
     for ax, col in zip(axes, MEMS_COLS):
-        for ds in DATASETS:
+        for ds in DATASETS_USED:
             df  = load(ds["path"])
             s   = smooth(df[col])
             baseline_mean = s[df["time_s"] <= BASELINE_S].mean()
@@ -100,25 +136,27 @@ def plot_timeseries() -> None:
 
 
 def plot_metrics() -> None:
-    """Bar chart: peak_delta and auc_delta per channel per session."""
+    """Bar charts: peak_delta, auc_delta, avg_roc per channel per session."""
+    roc_window = min_post_baseline_duration()
     records = []
-    for ds in DATASETS:
+    for ds in DATASETS_USED:
         df      = load(ds["path"])
-        metrics = compute_metrics(df)
+        metrics = compute_metrics(df, roc_window_s=roc_window)
         for col, m in metrics.items():
             records.append({
-                "label":       ds["label"],
-                "type":        ds["type"],
-                "channel":     col,
+                "label":   ds["label"],
+                "type":    ds["type"],
+                "channel": col,
                 **m,
             })
     mdf = pd.DataFrame(records)
 
-    fig, axes = plt.subplots(1, len(MEMS_COLS), figsize=(5 * len(MEMS_COLS), 5), sharey=False)
+    fig,  axes  = plt.subplots(1, len(MEMS_COLS), figsize=(5 * len(MEMS_COLS), 5), sharey=False)
     fig2, axes2 = plt.subplots(1, len(MEMS_COLS), figsize=(5 * len(MEMS_COLS), 5), sharey=False)
+    fig3, axes3 = plt.subplots(1, len(MEMS_COLS), figsize=(5 * len(MEMS_COLS), 5), sharey=False)
 
-    for ax, ax2, col in zip(axes, axes2, MEMS_COLS):
-        sub = mdf[mdf["channel"] == col]
+    for ax, ax2, ax3, col in zip(axes, axes2, axes3, MEMS_COLS):
+        sub    = mdf[mdf["channel"] == col]
         colors = [TYPE_COLORS[t] for t in sub["type"]]
 
         # peak delta
@@ -143,6 +181,17 @@ def plot_metrics() -> None:
                      f"{bar.get_height():.1f}",
                      ha="center", va="bottom", fontsize=7)
 
+        # avg rate of change
+        bars3 = ax3.bar(sub["label"], sub["avg_roc"], color=colors, edgecolor="white")
+        ax3.set_title(f"{col} — avg rate of change")
+        ax3.set_ylabel("avg |dV/dt| (V/s)")
+        ax3.tick_params(axis="x", rotation=30)
+        for bar in bars3:
+            ax3.text(bar.get_x() + bar.get_width() / 2,
+                     bar.get_height(),
+                     f"{bar.get_height():.5f}",
+                     ha="center", va="bottom", fontsize=7)
+
     # legend proxy
     from matplotlib.patches import Patch
     legend_elements = [Patch(facecolor=c, label=t) for t, c in TYPE_COLORS.items()]
@@ -154,24 +203,31 @@ def plot_metrics() -> None:
     fig2.suptitle("AUC (integrated delta above baseline) — per channel", fontsize=12)
     fig2.tight_layout()
 
+    fig3.legend(handles=legend_elements, loc="upper right", fontsize=9)
+    fig3.suptitle(f"Avg rate of change |dV/dt| — per channel (first {roc_window:.0f}s)", fontsize=12)
+    fig3.tight_layout()
+
     plt.show()
 
 
 def print_summary() -> None:
     """Print a summary table of all metrics."""
+    roc_window = min_post_baseline_duration()
+    print(f"RoC window capped at {roc_window:.1f}s (shortest post-baseline duration)\n")
     rows = []
-    for ds in DATASETS:
+    for ds in DATASETS_USED:
         df      = load(ds["path"])
-        metrics = compute_metrics(df)
+        metrics = compute_metrics(df, roc_window_s=roc_window)
         for col, m in metrics.items():
             rows.append({
-                "session":      ds["label"],
-                "type":         ds["type"],
-                "channel":      col,
-                "baseline (V)": round(m["baseline_mean"], 4),
-                "peak Δ (V)":   round(m["peak_delta"], 4),
-                "AUC (V·s)":    round(m["auc_delta"], 1),
-                "t_peak (s)":   round(m["time_to_peak"], 1),
+                "session":       ds["label"],
+                "type":          ds["type"],
+                "channel":       col,
+                "baseline (V)":  round(m["baseline_mean"], 4),
+                "peak Δ (V)":    round(m["peak_delta"], 4),
+                "AUC (V·s)":     round(m["auc_delta"], 1),
+                "t_peak (s)":    round(m["time_to_peak"], 1),
+                "avg RoC (V/s)": round(m["avg_roc"], 6),
             })
     summary = pd.DataFrame(rows)
     print(summary.to_string(index=False))
