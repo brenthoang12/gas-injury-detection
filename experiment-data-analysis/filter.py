@@ -3,6 +3,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from scipy.signal import savgol_filter, butter, filtfilt
+from scipy.ndimage import gaussian_filter1d
+
 
 H2S_SENSITIVITY_CODE = 216.09
 ETOH_SENSITIVITY_CODE = 21.5
@@ -13,12 +15,16 @@ ETOH_TIA_GAIN = 249.0
 M_H2S = H2S_SENSITIVITY_CODE * H2S_TIA_GAIN * 1e-6
 M_ETOH = ETOH_SENSITIVITY_CODE * ETOH_TIA_GAIN * 1e-6
 
-H2S_OFFSET_PPM = 15.9215 # from offset_h2s.py
-ETOH_OFFSET_PPM = 19.5510 # from offset_etoh.py
+H2S_OFFSET_PPM = 14.2000 # from offset_h2s.py
+# H2S_OFFSET_PPM = 0
+ETOH_OFFSET_PPM = 29.0403 # from offset_etoh.py
+# ETOH_OFFSET_PPM = 0
 
 TRUE_PPM_H2S = 1.5   
 MEASURED_H2S   = 1.0   
 H2S_SCALE  = TRUE_PPM_H2S / MEASURED_H2S  
+
+VGAS_ETOH_OFFSET = -0.1838
 
 def graph_feature(data: pd.DataFrame, col: str, outlier_col: str = None) -> None:
     plt.figure()
@@ -70,8 +76,8 @@ def detect_outliers_zscore(series: pd.Series, window: int = 20, threshold: float
     Rolling Z-score outlier detection.
     Returns boolean Series: True = outlier.
     """
-    rolling_mean = series.rolling(window=window, center=True, min_periods=1).mean()
-    rolling_std  = series.rolling(window=window, center=True, min_periods=1).std()
+    rolling_mean = series.rolling(window=window, center=False, min_periods=1).mean()
+    rolling_std  = series.rolling(window=window, center=False, min_periods=1).std()
     z_score = (series - rolling_mean) / rolling_std.replace(0, np.nan)
     return z_score.abs() > threshold
 
@@ -82,8 +88,8 @@ def detect_outliers_iqr(series: pd.Series, window: int = 20, k: float = 1.5) -> 
     Returns boolean Series: True = outlier.
     k=1.5 is standard; raise to 2.0-3.0 to be less aggressive.
     """
-    Q1 = series.rolling(window=window, center=True, min_periods=1).quantile(0.25)
-    Q3 = series.rolling(window=window, center=True, min_periods=1).quantile(0.75)
+    Q1 = series.rolling(window=window, center=False, min_periods=1).quantile(0.25)
+    Q3 = series.rolling(window=window, center=False, min_periods=1).quantile(0.75)
     IQR = Q3 - Q1
     lower = Q1 - k * IQR
     upper = Q3 + k * IQR
@@ -106,8 +112,8 @@ def detect_outliers_roc(series: pd.Series, window: int = 20, threshold: float = 
         return roc > threshold
     else:
         # adaptive threshold — flag where ROC is unusually large relative to local behaviour
-        rolling_mean_roc = roc.rolling(window=window, center=True, min_periods=1).mean()
-        rolling_std_roc  = roc.rolling(window=window, center=True, min_periods=1).std()
+        rolling_mean_roc = roc.rolling(window=window, center=False, min_periods=1).mean()
+        rolling_std_roc  = roc.rolling(window=window, center=False, min_periods=1).std()
         z_score = (roc - rolling_mean_roc) / rolling_std_roc.replace(0, np.nan)
         return z_score > z_thresh
 
@@ -197,44 +203,67 @@ def main():
     path_h2s_0 = "testrun-h2s-st-2/readings_20260312_144332.csv"
     path_h2s_1 = "testrun-h2s-st/readings_20260312_120603.csv"
     path_voc = "testrun-voc-st/readings_20260312_151908.csv"
-    df = load_data(path_h2s_0)
-    # df = trimmed_data(df, 1400)
+    clean_air_zip_0 = "20260326-experiment/zip_lock_clean.csv"
+    clean_air_zip_1 = "20260325-experiment/zip_lock_clean.csv"
+    clean_air_zip_2 = "20260324-experiment/zip_lock_clean.csv"
+
+    df = load_data(clean_air_zip_0)
+    # df = trimmed_data(df, 150)
 
     # ---- Clean H2S data
 
-    print(f"Vref  min={df['h2s_vref'].min()}  max={df['h2s_vref'].max()}  mean={df['h2s_vref'].mean()}")
+    # print(f"Vref  min={df['h2s_vref'].min()}  max={df['h2s_vref'].max()}  mean={df['h2s_vref'].mean()}")
     df['h2s_vref'] = df['h2s_vref'].mean()
-    df['h2s_ppm'] = ((df['h2s_vgas'] - df['h2s_vref']) / M_H2S - H2S_OFFSET_PPM).clip(lower=0)
-    df['h2s_ppm'] = df['h2s_ppm'] * H2S_SCALE
+    df['h2s_ppm']  = ((df['h2s_vgas'] - df['h2s_vref']) / M_H2S - H2S_OFFSET_PPM).clip(lower=0)
+    df['h2s_ppm']  = df['h2s_ppm'] * H2S_SCALE
 
-    df['h2s_outlier_roc'] = detect_outliers_roc(df["h2s_ppm"])
-    print(f"ROC  outliers: {df['h2s_outlier_roc'].sum()} / {len(df)} ({100 * df['h2s_outlier_roc'].sum() / len(df):.1f}%)")
-    df['h2s_clean_roc'] = handle_outliers(df["h2s_ppm"], df["h2s_outlier_roc"], method="interpolate")
-    df['h2s_sf_roc'] = savgol_filter(df["h2s_clean_roc"], window_length=51, polyorder=2)
-    
-    df['h2s_outlier_iqr'] = detect_outliers_iqr(df["h2s_ppm"])
-    print(f"IQR  outliers: {df['h2s_outlier_iqr'].sum()} / {len(df)} ({100 * df['h2s_outlier_iqr'].sum() / len(df):.1f}%)")
-    df['h2s_clean_iqr'] = handle_outliers(df["h2s_ppm"], df["h2s_outlier_iqr"], method="interpolate")
-    df['h2s_sf_iqr'] = savgol_filter(df["h2s_clean_iqr"], window_length=51, polyorder=2)
+    df['h2s_outlier_iqr']      = detect_outliers_iqr(df["h2s_ppm"])
+    df['h2s_outlier_roc']      = detect_outliers_roc(df["h2s_ppm"])
+    df['h2s_outlier_combined'] = df['h2s_outlier_iqr'] | df['h2s_outlier_roc']
+    df['h2s_clean_iqr']        = handle_outliers(df["h2s_ppm"], df["h2s_outlier_combined"], method="interpolate")
+    df['h2s_sf_iqr']           = savgol_filter(df["h2s_clean_iqr"], window_length=51, polyorder=2)
+    df['h2s_smooth']           = lowpass_filter(df['h2s_sf_iqr'], cutoff_hz=0.005).clip(lower=0)
 
-    df['h2s_lp'] = lowpass_filter(df['h2s_sf_iqr'], cutoff_hz=0.005)
+
+    # print(f"Vref  min={df['h2s_vref'].min()}  max={df['h2s_vref'].max()}  mean={df['h2s_vref'].mean()}")
+    # df['h2s_vref'] = df['h2s_vref'].mean()
+    # df['h2s_ppm']  = ((df['h2s_vgas'] - df['h2s_vref']) / M_H2S - H2S_OFFSET_PPM).clip(lower=0)
+    # df['h2s_ppm']  = df['h2s_ppm'] * H2S_SCALE
+
+    # df['h2s_outlier_iqr']      = detect_outliers_iqr(df["h2s_ppm"], 30)
+    # df['h2s_outlier_roc']      = detect_outliers_roc(df["h2s_ppm"])
+    # df['h2s_outlier_combined'] = df['h2s_outlier_iqr'] | df['h2s_outlier_roc']
+    # df['h2s_clean_iqr']        = handle_outliers(df["h2s_ppm"], df["h2s_outlier_combined"], method="interpolate")
+    # df['h2s_smooth']           = gaussian_filter1d(df['h2s_clean_iqr'].values, sigma=80)
 
     # ---- Clean ETOH data
+    """
+    """
     print(f"Vref  min={df['etoh_vref'].min()}  max={df['etoh_vref'].max()}  mean={df['etoh_vref'].mean()}")
-    df['etoh_vref'] = df['etoh_vref'].mean()
+    df['etoh_vref'] = df['etoh_vref'].mean() 
+    df['etoh_vgas'] = df['etoh_vgas'] - VGAS_ETOH_OFFSET
     df['etoh_ppm'] = ((df['etoh_vgas'] - df['etoh_vref']) / M_ETOH - ETOH_OFFSET_PPM).clip(lower=0)
     
-    df['etoh_outlier_iqr'] = detect_outliers_iqr(df["etoh_ppm"])
-    df['etoh_clean_iqr'] = handle_outliers(df["etoh_ppm"], df["etoh_outlier_iqr"], method="interpolate")
-    df['etoh_sf_iqr'] = savgol_filter(df["etoh_clean_iqr"], window_length=51, polyorder=2)
+    df['etoh_outlier_iqr']      = detect_outliers_iqr(df["etoh_ppm"], 30, 1.2)
+    df['etoh_outlier_roc']      = detect_outliers_roc(df["etoh_ppm"])
+    df['etoh_outlier_combined'] = df['etoh_outlier_iqr'] | df['etoh_outlier_roc']
+    df['etoh_clean_iqr']        = handle_outliers(df["etoh_ppm"], df["etoh_outlier_combined"], method="interpolate")
+    df['etoh_smooth']           = gaussian_filter1d(df['etoh_clean_iqr'].values, sigma=80)
 
-    df['etoh_lp'] = lowpass_filter(df['etoh_sf_iqr'], cutoff_hz=0.005)
-
-    
+    # df['etoh_outlier_iqr'] = detect_outliers_iqr(df["etoh_ppm"], 30)
+    # df['etoh_outlier_roc'] = detect_outliers_roc(df["etoh_ppm"])
+    # df['etoh_outlier_combined'] = df['etoh_outlier_iqr'] | df['etoh_outlier_roc']
+    # df['etoh_clean_iqr'] = handle_outliers(df["etoh_ppm"], df["etoh_outlier_combined"], method="interpolate")
+    # df['etoh_lp']        = lowpass_filter(df['etoh_clean_iqr'], cutoff_hz=0.01)
+    # df['etoh_smooth']    = savgol_filter(df['etoh_lp'], window_length=151, polyorder=3)
 
     # ---- Graph
     # graph_feature(df, "etoh_lp")
-    graph_features(df, ["h2s_sf_iqr", "h2s_lp"])
+    # graph_feature(df, "etoh_ppm")
+    # graph_features(df, ["etoh_clean_iqr", "etoh_smooth"])
+    graph_features(df, ["h2s_clean_iqr", "h2s_smooth"])
+    # graph_features(df, ["etoh_smooth", "h2s_smooth"])
+    
     # graph_features(df, ["etoh_sf_iqr", "etoh_lp"])
 
 
