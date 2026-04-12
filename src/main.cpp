@@ -31,7 +31,7 @@
 //       repeatability can be achieved. The datasheet doesn't mention min and max readings 
 //       for MEMS sensor.
 #define MEMS_BASELINE_MIN   0.00f
-#define MEMS_BASELINE_MAX   3.20f
+#define MEMS_BASELINE_MAX   3.30f
 
 #define SPEC_NOT_READY_V    3.29f  // Vgas at rail voltage indicates sensor not warmed up
 

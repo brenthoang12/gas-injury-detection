@@ -31,3 +31,49 @@ VOC and Humidity
 **Sweat**
 650s NH3 and HCHO second order affect
 2100s bag open
+
+
+
+
+
+
+
+**March 31**
+Blood 1
+- Warm up 2500s
+- Put 1.5 ml blood to ziplock 3500s
+- Inject another 1.5 ml to the ziplock 
+
+Blood 2
+- stabilize  700s
+- Inject 1.5 ml bloog to ziplock 
+
+Blood 3
+- stabilize 850s
+- Inject 1.5 ml blood to ziplock 1650s
+- Inject another 1.5 ml to the ziplock 
+
+Sweat
+- Warmup 1600s
+- Introduce water 2600s
+- Remove water sample and stabilize 3100s
+- Introduce 1.32 ml sweat 4000s
+- Remove sweat sample and stabilize 4950s 
+- Introduce 1.2 ml sweat
+
+
+**April 04**
+- Warmup 2400s  
+- Introduce sweat sample 3400s
+- Reset 
+
+**April 05**
+- Warmup 2850s
+- Introduce sweat sample 2,3 3850s
+- Reset 4600s
+- Introduce sweat sample 1 6350s
+
+
+**April 06**
+- Warmup 1950s
+- Introduce blood sample 

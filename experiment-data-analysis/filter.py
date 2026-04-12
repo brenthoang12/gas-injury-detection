@@ -15,12 +15,12 @@ ETOH_TIA_GAIN = 249.0
 M_H2S = H2S_SENSITIVITY_CODE * H2S_TIA_GAIN * 1e-6
 M_ETOH = ETOH_SENSITIVITY_CODE * ETOH_TIA_GAIN * 1e-6
 
-H2S_OFFSET_PPM = 14.2000 # from offset_h2s.py
+H2S_OFFSET_PPM = 13.5 # from offset_h2s.py
 # H2S_OFFSET_PPM = 0
-ETOH_OFFSET_PPM = 29.0403 # from offset_etoh.py
+ETOH_OFFSET_PPM = 25.0403 # from offset_etoh.py
 # ETOH_OFFSET_PPM = 0
 
-TRUE_PPM_H2S = 1.5   
+TRUE_PPM_H2S = 1.5   #1.5 orig
 MEASURED_H2S   = 1.0   
 H2S_SCALE  = TRUE_PPM_H2S / MEASURED_H2S  
 
@@ -200,12 +200,13 @@ def load_data(path: str) -> pd.DataFrame:
 
 def main():
     # ---- Load data
-    path_h2s_0 = "testrun-h2s-st-2/readings_20260312_144332.csv"
-    path_h2s_1 = "testrun-h2s-st/readings_20260312_120603.csv"
-    path_voc = "testrun-voc-st/readings_20260312_151908.csv"
-    clean_air_zip_0 = "20260326-experiment/zip_lock_clean.csv"
-    clean_air_zip_1 = "20260325-experiment/zip_lock_clean.csv"
-    clean_air_zip_2 = "20260324-experiment/zip_lock_clean.csv"
+    EXPERIMENT_PATH_SWEAT_1 = "20260325-experiment/sweat.csv"
+    EXPERIMENT_PATH_SWEAT_2 = "20260326-experiment/sweat.csv"
+    EXPERIMENT_PATH_SWEAT_3 = "20260331-experiment/sweat.csv"
+    EXPERIMENT_PATH_SWEAT_4 = "20260404-experiment/sweat.csv"
+    EXPERIMENT_PATH_BLOOD_1 = "20260331-experiment/1.5blood_1.csv"
+    EXPERIMENT_PATH_BLOOD_2 = "20260331-experiment/1.5blood_2.csv"
+    EXPERIMENT_PATH_BLOOD_3 = "20260331-experiment/1.5blood_3.csv"
 
     df = load_data(clean_air_zip_0)
     # df = trimmed_data(df, 150)
@@ -221,7 +222,7 @@ def main():
     df['h2s_outlier_roc']      = detect_outliers_roc(df["h2s_ppm"])
     df['h2s_outlier_combined'] = df['h2s_outlier_iqr'] | df['h2s_outlier_roc']
     df['h2s_clean_iqr']        = handle_outliers(df["h2s_ppm"], df["h2s_outlier_combined"], method="interpolate")
-    df['h2s_sf_iqr']           = savgol_filter(df["h2s_clean_iqr"], window_length=51, polyorder=2)
+    df['h2s_sf_iqr']           = savgol_filter(df["h2s_clean_iqr"], window_length=20, polyorder=2)
     df['h2s_smooth']           = lowpass_filter(df['h2s_sf_iqr'], cutoff_hz=0.005).clip(lower=0)
 
 
