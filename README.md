@@ -69,11 +69,12 @@ Sweat
 
 **April 05**
 - Warmup 2850s
-- Introduce sweat sample 2,3 3850s
+- Introduce sweat sample (2,3) 3850s
 - Reset 4600s
-- Introduce sweat sample 1 6350s
+- Introduce sweat sample (1) 6350s
 
 
 **April 06**
 - Warmup 1950s
 - Introduce blood sample 
+
