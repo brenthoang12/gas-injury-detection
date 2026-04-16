@@ -1,0 +1,383 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!8},
+}
+
+\title{\textbf{Data Processing Pipeline} \\[0.5em]
+       \large Gas Injury Detection --- MEMS and SPEC Sensors}
+\author{Experiment Data}
+\date{April 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Overview}
+
+Two independent processing pipelines clean the raw CSV recordings before
+any modelling.  Each pipeline is implemented in a Jupyter notebook and
+exports \texttt{.pkl} files to the \texttt{processed/} directory.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Notebook & Sensors & Output files \\
+\midrule
+\texttt{mems\_filter.ipynb} & VOC, NH3, HCHO (metal-oxide) & \texttt{mems\_*.pkl} \\
+\texttt{spec\_filter.ipynb} & H2S, EtOH (electrochemical) & \texttt{spec\_*.pkl} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The datasets processed are:
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+Key & Source file & Session & Notes \\
+\midrule
+SWEAT\_1a & \texttt{20260405-experiment/sweat.csv} & Apr 05 & Up to 4000\,s \\
+SWEAT\_1b & \texttt{20260405-experiment/sweat.csv} & Apr 05 & 4000\,s onward; elapsed reset \\
+BLOOD\_0  & \texttt{20260406-experiment/1.5\_blood.csv}   & Apr 06 & Full session \\
+BLOOD\_1  & \texttt{20260406-experiment/1.5\_blood\_2.csv} & Apr 06 & Trimmed: $t \geq 1750$\,s \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Sweat 0} (\texttt{20260404-experiment/sweat.csv}) is excluded from
+training --- the NH3 pin was disconnected (miswired) for that session ---
+but it is used as an out-of-sample validation target.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{MEMS Pipeline (\texttt{mems\_filter.ipynb})}
+
+\subsection{Data Loading}
+
+Raw CSV is read with \texttt{wall\_time} parsed as a timestamp.
+Elapsed time is computed as:
+\[
+  t_{\text{elapsed}} = \texttt{wall\_time} - \texttt{wall\_time}[0] \quad [\text{seconds}]
+\]
+An optional trim is applied: rows with $t < t_{\min}$ or $t \geq t_{\max}$ are
+discarded before any processing.
+
+For Sweat 1, the session is split at $t_{\text{reset}} = 4000$\,s (a recording
+restart event):
+\begin{itemize}
+  \item \textbf{SWEAT\_1a}: $t < 4000$\,s --- contains sweat samples 2 and 3
+        (introduced $\approx$3850\,s).
+  \item \textbf{SWEAT\_1b}: $t \geq 4000$\,s --- elapsed reset to 0; contains
+        sweat sample 1 (introduced $\approx$570\,s of sub-session time).
+\end{itemize}
+
+\subsection{Artifact Removal}
+
+Known electrical or handling artifacts are patched \emph{before} smoothing by
+replacing the affected time range with \texttt{NaN} and interpolating linearly
+between the clean neighbours.  Per-dataset artifact windows:
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+Dataset & Channel & $t_{\text{start}}$ (s) & $t_{\text{end}}$ (s) \\
+\midrule
+SWEAT\_1a & VOC, NH3, HCHO & 2950 & 3100 \\
+SWEAT\_1b & HCHO           &  540 &  570 \\
+BLOOD\_0  & NH3            & 1970 & 2030 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+BLOOD\_0 NH3 also has isolated zero readings interpolated before artifact
+removal (sensor dropout artefacts).
+
+\subsection{Smoothing --- Causal Exponential Moving Average}
+
+After artifact patching, each MEMS channel is smoothed with a causal
+Exponential Moving Average (EMA):
+\[
+  \hat{x}[n] = \alpha\, x[n] + (1 - \alpha)\, \hat{x}[n-1], \qquad
+  \alpha = \frac{2}{\text{span} + 1}
+\]
+
+Default span is 30 samples ($\approx 30$\,s at 1\,Hz).  SWEAT\_1b NH3 uses
+a larger span of 80 to suppress its higher noise level.
+
+\textbf{Why causal EMA:} The model will run in real time on a microcontroller.
+Using a non-causal filter (e.g.\ Savitzky--Golay, zero-phase Butterworth)
+during training but a causal filter at inference would introduce a
+train/inference mismatch.  Causal EMA is identical offline and online.
+
+\subsection{Baseline and Sensor Drift Correction}
+
+Metal-oxide sensors exhibit a slow resistive drift even in clean air.  A linear
+trend is estimated from a \emph{pre-sample baseline window} and subtracted from
+the full signal:
+
+\begin{enumerate}
+  \item Select rows in the baseline window $[t_0, t_1]$ (before sample
+        introduction).
+  \item Fit a degree-1 polynomial to the EMA-filtered signal in that window:
+        \[
+          \hat{y}(t) = a \cdot t + b
+          \qquad \text{via least squares on } t \in [t_0, t_1]
+        \]
+  \item Subtract the extrapolated trend from the entire session:
+        \[
+          y_{\text{corr}}(t) = \max\!\bigl(y(t) - \hat{y}(t),\; 0\bigr)
+        \]
+        The $\max(\cdot, 0)$ clip prevents negative readings.
+\end{enumerate}
+
+Baseline windows per dataset:
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Dataset & $t_0$ (s) & $t_1$ (s) \\
+\midrule
+SWEAT\_1a & 1500 & 2800 \\
+SWEAT\_1b &    0 &  570 \\
+BLOOD\_0  &    0 & 1900 \\
+BLOOD\_1  & 1750 & 2440 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Export}
+
+Drift-corrected channels \texttt{[elapsed\_s, voc, nh3, hcho, temp\_C, rh\_pct]}
+are exported as \texttt{processed/mems\_\{key\}.pkl} for each dataset.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{SPEC Pipeline (\texttt{spec\_filter.ipynb})}
+
+\subsection{PPM Conversion}
+
+Raw voltage readings from the SPEC electrochemical sensors are converted to PPM
+using the transimpedance amplifier (TIA) gain and manufacturer sensitivity code:
+\[
+  m = S_{\text{code}} \times R_{\text{TIA}} \times 10^{-6} \quad [\text{V/ppm}]
+\]
+\[
+  \text{ppm} = \max\!\left(\frac{V_{\text{gas}} + \delta V - V_{\text{ref}}}{m},\; 0\right) \times s
+\]
+
+where $\delta V$ is a per-sensor voltage offset and $s$ is a multiplicative
+scale factor.  Parameters used:
+
+\begin{center}
+\begin{tabular}{lrrrrrr}
+\toprule
+Sensor & $S_{\text{code}}$ (nA/ppm) & $R_{\text{TIA}}$ (k$\Omega$) & $m$ (V/ppm) & $\delta V$ (V) & $s$ \\
+\midrule
+H2S  & 216.09 & 49.9  & $1.078 \times 10^{-2}$ & 0.000 & 1.5 \\
+EtOH &  21.5  & 249.0 & $5.354 \times 10^{-3}$ & +0.100 & 1.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Outlier Detection and Handling}
+
+Two independent detectors are run on the raw PPM signal; a sample flagged by
+\emph{either} is treated as an outlier.
+
+\subsubsection*{Rolling IQR}
+\[
+  \text{outlier if } x < Q_1 - k \cdot \text{IQR} \;\text{ or }\; x > Q_3 + k \cdot \text{IQR}
+\]
+Computed over a causal rolling window of 60 samples with $k = 2.0$.
+
+\subsubsection*{Rolling Rate-of-Change (ROC)}
+\[
+  \text{outlier if } \frac{|\Delta x[n]| - \mu_{\text{ROC}}}{\sigma_{\text{ROC}}} > z_{\text{thresh}}
+\]
+where $\mu_{\text{ROC}}$ and $\sigma_{\text{ROC}}$ are the rolling mean and
+standard deviation of $|\Delta x|$ over 60 samples, and $z_{\text{thresh}} = 3.0$.
+
+Flagged samples are replaced by linear interpolation between the surrounding
+clean values (forward/backward filled at boundaries).
+
+\subsection{Smoothing --- Three-Stage Filter}
+
+The outlier-handled signal is smoothed with a three-stage pipeline:
+
+\begin{enumerate}
+  \item \textbf{Savitzky--Golay (SG)} pre-smoother:
+        window = 121 samples, polynomial order = 3.
+        Removes rapid point noise while preserving peak shapes.
+
+  \item \textbf{Causal Butterworth low-pass}:
+        4th-order, $f_c = 0.005$\,Hz at $f_s = 1$\,Hz.
+        Extracts the slow trend.  Implemented with \texttt{lfilter} and
+        matched initial conditions (\texttt{lfilter\_zi}) to avoid edge
+        transients.
+\end{enumerate}
+
+\noindent\textit{Note:} The SG stage is non-causal (used here for noise
+pre-processing only); the Butterworth stage is causal.  At inference,
+the SG step may be replaced by a running EMA of equivalent span.
+
+\subsection{Boot-up Stabilization Detection}
+
+After power-on, SPEC sensors drift substantially before settling.  Each sensor
+uses a dedicated algorithm to detect the stabilization point.
+
+\subsubsection*{H2S --- Dual Moving Average Convergence}
+
+A short-term MA (60\,s) and long-term MA (300\,s) are computed on the
+outlier-handled signal.  The sensor is considered stable when:
+\[
+  |\text{MA}_{\text{short}}(t) - \text{MA}_{\text{long}}(t)| < \theta
+  \quad \text{for } \geq 300 \text{ consecutive samples}
+\]
+with $\theta = 0.05$\,ppm.  The first 1200 samples are always excluded (sensor
+is guaranteed unstable during warmup).
+
+\subsubsection*{EtOH --- Rolling Slope Threshold}
+
+EtOH decays exponentially from a high boot value; the dual-MA gap closes too
+slowly.  Instead, the three-stage filtered signal is used:
+\[
+  \text{stable when } \overline{|\Delta x|}_{w} < \theta_{\text{slope}}
+  \quad \text{for } \geq 300 \text{ consecutive samples}
+\]
+where the rolling mean is computed over a long window and
+$\theta_{\text{slope}}$ is a dataset-specific threshold.
+
+\subsection{Stabilization Offset Correction}
+
+The signal value at the detected stabilization point is used as a per-boot
+baseline offset.  All readings are shifted so the baseline is zero:
+\[
+  y_{\text{corr}}(t) = \max\!\bigl(y(t) - y(t_{\text{stable}}),\; 0\bigr)
+\]
+If stabilization is not detected, the mean of the first 300 samples is used
+as a fallback.
+
+\subsection{Sweat 1 Session Split}
+
+The Sweat 1 session (\texttt{20260405}) contains two distinct sub-sessions
+separated by a recording restart at $t = 4000$\,s.  After offset correction,
+the session is split:
+
+\begin{itemize}
+  \item \textbf{SPEC SWEAT\_1a}: $t \leq 4000$\,s
+  \item \textbf{SPEC SWEAT\_1b}: $t > 4000$\,s, elapsed reset to 0
+\end{itemize}
+
+\subsection{Export}
+
+Offset-corrected channels \texttt{[elapsed\_s, h2s\_ppm, etoh\_ppm]} are
+exported as \texttt{processed/spec\_\{key\}.pkl} for each dataset.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Merge and Feature Engineering (\texttt{combined.ipynb})}
+
+\subsection{Merge}
+
+MEMS and SPEC pickle files are inner-joined on \texttt{elapsed\_s} to produce
+one DataFrame per dataset with all seven channels:
+\texttt{voc, nh3, hcho, h2s\_ppm, etoh\_ppm, temp\_C, rh\_pct}.
+
+\subsection{Labelling}
+
+Each row is assigned one of three class labels based on manually annotated
+time windows (from experimental README):
+
+\begin{center}
+\begin{tabular}{rlll}
+\toprule
+Label & Class & Dataset & Window (s) \\
+\midrule
+0 & Baseline & All & Rows outside sample windows \\
+1 & Sweat    & SWEAT\_1a & 2870 -- 3850 \\
+1 & Sweat    & SWEAT\_1b &  570 -- 2330 \\
+2 & Blood    & BLOOD\_0  & 1900 -- 3730 \\
+2 & Blood    & BLOOD\_1  & 2440 -- 3800 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Helper Columns}
+
+The following features are computed per row, causally (using only past data),
+for each channel in \texttt{[voc, nh3, hcho, h2s\_ppm, etoh\_ppm, rh\_pct]}:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Column & Description \\
+\midrule
+\texttt{\_roc}         & First difference $x[n] - x[n-1]$ \\
+\texttt{\_acc}         & Second difference (diff of diff) \\
+\texttt{\_roll\_mean\_\{w\}} & Causal rolling mean over $w \in \{15, 30, 60\}$ samples \\
+\texttt{\_roll\_std\_\{w\}}  & Causal rolling std over $w$ samples \\
+\texttt{\_roll\_roc\_\{w\}}  & Causal rolling mean of $|$ROC$|$ over $w$ samples \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\texttt{temp\_C} is excluded from feature columns; \texttt{rh\_pct} contributes
+helper columns only (not its raw value).
+
+\subsection{Windowed Feature Extraction}
+
+Non-overlapping 60-second windows are slid separately over each
+\emph{(session, label)} pair --- windows never cross label boundaries.
+Within each window, four aggregates are computed per feature column:
+\[
+  \{\,\text{mean},\ \text{std},\ \text{max},\ \text{slope}\,\}
+\]
+where slope is the linear regression coefficient of the column against sample
+index within the window.
+
+\subsection{Class Balancing}
+
+Baseline windows greatly outnumber sample windows.  The baseline set is
+randomly undersampled to match the size of the larger sample class (sweat or
+blood), producing a balanced \texttt{windows\_balanced} DataFrame.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Model --- Random Forest}
+
+\subsection{Run 1}
+\begin{itemize}
+  \item 200 decision trees, \texttt{class\_weight="balanced"}
+  \item All feature columns (raw aggregates + ROC + rolling mean/std/ROC + acceleration)
+  \item Leave-One-Session-Out (LOSO) cross-validation via \texttt{GroupKFold(n\_splits=4)}
+  \item Mean validation accuracy: 0.752, std: 0.253
+  \item Fold 3 (held-out: blood\_0) collapsed to 0.333 --- blood\_0 EtOH max
+        $\approx$14 ppm vs blood\_1 max $\approx$0.3 ppm; model had only seen blood\_1 for
+        the blood class.
+\end{itemize}
+
+\subsection{Run 2}
+\begin{itemize}
+  \item 100 decision trees, \texttt{class\_weight="balanced"}
+  \item Feature reduction: remove \texttt{\_roll\_mean\_*}, \texttt{\_roll\_std\_*},
+        \texttt{\_acc} columns; keep raw aggregates and ROC columns only
+  \item 80/20 stratified train/test split on \texttt{windows\_balanced}
+  \item Per-class precision and recall reported on the held-out 20\%
+\end{itemize}
+
+Future sessions (new blood/sweat recordings) will serve as true out-of-sample
+validation.
+
+\end{document}

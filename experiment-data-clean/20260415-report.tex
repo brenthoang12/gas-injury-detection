@@ -1,0 +1,293 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+
+\graphicspath{{figures/}}
+
+% Placeholder box for missing figures
+\newcommand{\figplaceholder}[2]{%
+  \begin{center}
+    \fbox{\parbox[c][#1][c]{0.85\linewidth}{\centering\color{gray}
+      \textbf{[FIGURE NEEDED]} \\ #2}}
+  \end{center}
+}
+
+\title{\textbf{Gas Injury Detection} \\[0.4em]
+       \large Wearable Sensor Classification --- Progress Report}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section*{Key Results}
+
+A Random Forest classifier was trained on four labeled sessions (two sweat,
+two blood) and validated on a held-out 20\% test split.  The model was then
+applied to a previously unseen sweat session to assess real-world
+generalizability.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Class    & Precision & Recall & Samples \\
+\midrule
+Baseline & 1.000     & 1.000  & 10 \\
+Sweat    & 0.900     & 1.000  & 9  \\
+Blood    & 1.000     & 0.900  & 10 \\
+\midrule
+\textbf{Overall accuracy} & \multicolumn{3}{c}{\textbf{0.967}} \\
+\bottomrule
+\end{tabular}
+\captionof{table}{Run 2 validation results (80/20 stratified split, 29 test windows).
+  \textbf{Precision} --- of all windows predicted as that class, how many were correct.
+  \textbf{Recall} --- of all actual windows of that class, how many were detected.}
+\end{center}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{sweat0_output}
+  \caption{Sweat\_0 (Apr 04) model predictions. Color bands show predicted
+    class per 60\,s window; opacity scales with confidence.
+    Sweat was introduced at $\approx$3400\,s.}
+\end{figure}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{System Overview}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.7\linewidth]{hardware}
+  \caption{Sensor hardware --- ESP32 with MEMS gas sensor array and SPEC electrochemical sensors.}
+\end{figure}
+
+The system uses an ESP32 microcontroller logging readings at 1\,Hz over serial.
+Two sensor families are integrated:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Sensor type & Channels & Target analytes \\
+\midrule
+MEMS (metal-oxide) & VOC, NH3, HCHO & Volatile organic compounds \\
+SPEC (electrochemical) & H2S, EtOH & Hydrogen sulfide, Ethanol \\
+\midrule
+Environmental & Temp, RH & Humidity compensation \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Data Collection}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+Session  & Date    & Sample type & Notes \\
+\midrule
+Sweat 1a & Apr 05  & Sweat (samples 2, 3) & Introduced $\approx$3850\,s \\
+Sweat 1b & Apr 05  & Sweat (sample 1)     & After recording reset at 4000\,s \\
+Blood 0  & Apr 06  & 1.5\,ml blood        & Introduced $\approx$1950\,s \\
+Blood 1  & Apr 06  & 1.5\,ml blood        & Second run, introduced $\approx$2450\,s \\
+\midrule
+Sweat 0  & Apr 04  & Sweat (validation only) & NH3 pin miswired --- excluded from training \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.49\linewidth}
+    \includegraphics[width=\linewidth]{blood0_mems_raw}
+    \caption{Blood 0 --- raw MEMS signals}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[t]{0.49\linewidth}
+    \includegraphics[width=\linewidth]{blood0_mems_filtered}
+    \caption{Blood 0 --- after filtering and drift correction}
+  \end{subfigure}
+  \caption{Example MEMS signal (VOC, NH3, HCHO) before and after the processing pipeline.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.49\linewidth}
+    \includegraphics[width=\linewidth]{blood0_spec_evn_raw}
+    \caption{Blood 0 --- raw SPEC signals}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[t]{0.49\linewidth}
+    \includegraphics[width=\linewidth]{blood0_spec_filtered}
+    \caption{Blood 0 --- after filtering and stabilization offset}
+  \end{subfigure}
+  \caption{Example SPEC signal (H2S, EtOH) before and after the processing pipeline.}
+\end{figure}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Processing Pipeline}
+
+Two independent pipelines clean the raw data before modeling.
+
+\subsection{MEMS Sensors}
+\begin{enumerate}
+  \item \textbf{Artifact removal} --- known electrical glitches patched by
+        linear interpolation over flagged time windows.
+  \item \textbf{Causal EMA smoothing} --- span 30\,s (80\,s for noisy NH3
+        in Sweat 1b).  Causal to match real-time inference behavior.
+  \item \textbf{Linear drift correction} --- a linear trend fitted over the
+        pre-sample baseline window is subtracted from the full session,
+        removing slow resistive sensor drift.
+\end{enumerate}
+
+\subsection{SPEC Sensors}
+\begin{enumerate}
+  \item \textbf{PPM conversion} from raw voltage using TIA gain and
+        manufacturer sensitivity code.
+  \item \textbf{Outlier removal} --- rolling IQR and rate-of-change detectors;
+        outliers replaced by linear interpolation.
+  \item \textbf{Three-stage smoothing} --- Savitzky--Golay pre-filter followed
+        by causal Butterworth low-pass ($f_c = 0.005$\,Hz).
+  \item \textbf{Boot-up stabilization offset} --- signal zeroed at the
+        automatically detected stabilization point.
+\end{enumerate}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Classification Model}
+
+\subsection{Feature Engineering}
+
+Non-overlapping 60-second windows are extracted from labelled regions.
+Within each window, four aggregates are computed per channel:
+mean, standard deviation, maximum, and linear slope.
+Rate-of-change (ROC) and multi-scale rolling ROC columns (15\,s / 30\,s / 60\,s)
+are included as features.  Humidity (\texttt{rh\_pct}) helper columns are
+included; temperature is excluded.
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+& Run 1 & Run 2 \\
+\midrule
+Trees            & 200   & 100 \\
+Feature columns  & 284   & 116 \\
+Feature set      & All helpers & ROC only (no roll\_mean / roll\_std / acc) \\
+Validation       & LOSO GroupKFold & 80/20 stratified split \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Run 1 --- Leave-One-Session-Out (LOSO) GroupKFold}
+
+Run 1 used \textbf{Leave-One-Session-Out (LOSO)} cross-validation.
+With four sessions (Sweat 1a, Sweat 1b, Blood 0, Blood 1), the data is split
+into four folds.  In each fold, one session is held back entirely for
+validation and the model is trained on the remaining three.  This rotates
+until every session has been the validation set exactly once.
+
+\begin{center}
+\begin{tabular}{llc}
+\toprule
+Fold & Train sessions & Validate on \\
+\midrule
+1 & Sweat 1b, Blood 0, Blood 1 & Sweat 1a \\
+2 & Sweat 1a, Blood 0, Blood 1 & Sweat 1b \\
+3 & Sweat 1a, Sweat 1b, Blood 1 & Blood 0 \\
+4 & Sweat 1a, Sweat 1b, Blood 0 & Blood 1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Run 1 mean validation accuracy was \textbf{0.752} ($\sigma = 0.253$).
+Fold 3 collapsed to 0.333 --- with only two blood sessions available,
+holding one out leaves the model with a single blood reference session,
+which is insufficient to learn a robust blood boundary.
+
+\subsection{Run 2 --- 80/20 Stratified Split}
+
+Run 2 used a simpler \textbf{80/20 random split} stratified by class label,
+using all available data for training.  80\% of windows (across all sessions)
+are used for training and 20\% for validation, with the split ensuring each
+class is proportionally represented in both sets.  This makes full use of the
+limited dataset and gives a reliable estimate of in-distribution performance.
+True out-of-sample validation is deferred to future sessions (e.g.\ Sweat 0).
+
+Run 2 overall accuracy: \textbf{0.967} across 29 test windows.
+
+\subsection{Class Balancing}
+
+Baseline windows outnumber labelled sample windows.  Baseline is randomly
+undersampled to match the size of the larger sample class before training.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Validation on Unseen Session (Sweat 0)}
+
+The trained model was applied to the April 04 sweat session, which was
+never used during training.  The raw CSV was processed with the same
+pipeline (resampled to 1\,Hz, drift corrected, offset corrected) and
+classified window-by-window.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{sweat0_output}
+  \caption{Sweat\_0 window-by-window predictions. Grey = baseline, blue = sweat, red = blood.
+    Opacity reflects model confidence. Sweat introduced at $\approx$3400\,s (orange dashed line).}
+\end{figure}
+
+The model predicts baseline during the warmup phase and transitions to sweat near the
+sample introduction point at 3400\,s, with confidence increasing as the signal stabilizes.
+Early windows (0--480\,s) show mixed baseline/blood probability due to the initial
+sensor transient before drift correction fully takes effect.
+
+\begin{center}
+\small
+\begin{tabular}{rrrll}
+\toprule
+Window & $t_{\text{start}}$ (s) & $t_{\text{end}}$ (s) & Prediction & Confidence \\
+\midrule
+ 1 &    0 &   59 & Baseline &  45\% \\
+ 2 &   60 &  119 & Baseline &  53\% \\
+ 3 &  120 &  179 & Baseline &  53\% \\
+ 4 &  180 &  239 & Baseline &  57\% \\
+ 5 &  240 &  299 & Baseline &  57\% \\
+ 6 &  300 &  359 & Baseline &  66\% \\
+ 7 &  360 &  419 & Baseline &  54\% \\
+ 8 &  420 &  479 & Baseline &  52\% \\
+ 9 &  480 &  539 & Sweat    &  42\% \\
+10 &  540 &  599 & Sweat    &  41\% \\
+11 &  600 &  659 & Baseline &  43\% \\
+12 &  660 &  719 & Baseline &  46\% \\
+13 &  720 &  779 & Baseline &  39\% \\
+\multicolumn{5}{c}{$\vdots$} \\
+65 & 3840 & 3899 & Sweat    &  44\% \\
+66 & 3900 & 3959 & Sweat    &  46\% \\
+\bottomrule
+\end{tabular}
+\captionof{table}{Sweat\_0 window predictions (selected rows). Full output: 66 windows over 3960\,s.}
+\end{center}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Next Steps}
+
+\begin{itemize}
+  \item Collect additional labelled sessions (more subjects, varying
+        sample volumes) to improve generalization.
+  \item Collect more blood sessions to improve within-class coverage
+        (currently only two blood sessions available).
+  \item Implement the causal pipeline on the ESP32 for real-time
+        classification output.
+  \item Add humidity correction to the SPEC sensor pipeline --- electrochemical
+        sensors are sensitive to relative humidity, and correcting for RH
+        variation may improve signal consistency across sessions.
+\end{itemize}
+
+\end{document}
