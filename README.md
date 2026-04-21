@@ -78,3 +78,9 @@ Sweat
 - Warmup 1950s
 - Introduce blood sample 
 
+**April 21**
+- Warmup 1750s
+- Introduce blood sample
+
+- Warmup 1950s
+- Introduce blood sample
