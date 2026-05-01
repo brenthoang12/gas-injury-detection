@@ -84,3 +84,47 @@ Sweat
 
 - Warmup 1950s
 - Introduce blood sample
+
+
+**April 22**
+- Warm up 1250s
+- Introduce blood sample 
+
+- Warm up 1750s
+- Introduce blood sample 
+
+
+**April 24**
+- Warm up 2650s
+- Introduce blood sample
+
+- Warm up 2150s
+- Introduce blood sample
+
+
+- Warm up 4225s
+- Introduce 1.45 ml sweat sample
+
+
+**April 26**
+- Warm up 2250s
+- Introduce 1.5 ml blood
+
+- Warm up 3550s
+- Introduce 1.6 ml sweat
+
+
+**April 27**
+- Warm up 3750s
+- Introduce 1.21 ml sweat
+
+- Warm up 1100s
+- Introduce 1.50 ml sweat
+
+
+**April 29**
+- Warm up 4600s
+- Introduce 1.47 ml sweat
+
+- Warm up 1750s
+- Introduce 1.58 ml sweat
