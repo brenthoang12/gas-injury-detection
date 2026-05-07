@@ -128,3 +128,10 @@ Sweat
 
 - Warm up 1750s
 - Introduce 1.58 ml sweat
+
+
+Future
+
+K-fold
+boostrap data
+15 sessions for mix  with variable small amount of blood
