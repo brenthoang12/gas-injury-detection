@@ -130,6 +130,23 @@ Sweat
 - Introduce 1.58 ml sweat
 
 
+**May 17**
+- Warm up 4400s
+- Introduce .75 sweat and .75 blood Mix Sample 
+
+- Warm up
+- Introduce .30 sweat and 1.20 blood Mix Sample 
+
+
+
+**May 18**
+- Warm up 3910s
+- Introduce .75 sweat and .75 blood Mix Sample 
+
+- Warm up 1500s
+- Introduce 1.40 sweat and .10 blood Mix Sample 
+
+
 Future
 
 K-fold
