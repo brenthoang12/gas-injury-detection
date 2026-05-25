@@ -146,6 +146,35 @@ Sweat
 - Warm up 1500s
 - Introduce 1.40 sweat and .10 blood Mix Sample 
 
+**May 19**
+- Warm up 6050s
+- Introduce 1.40 sweat and .10 blood Mix Sample 
+
+- Warm up 1625s
+- Introduce 1.20 sweat and .30 blood Mix Sample 
+
+
+**May 22**
+- Warm up 5925s
+- Introduce 1.40 sweat and .10 blood Mix Sample 
+
+- Warm up 
+- Introduce 1.20 sweat and .30 blood Mix Sample 
+
+- Warm up 1380s
+- Introduce .75 sweat and .75 blood Mix Sample 
+
+**May 23**
+- Warm up 4825s
+- Introduce 1.40 sweat and .10 blood Mix Sample 
+
+- Warm up 1675s
+- Introduce 1.20 sweat and .30 blood Mix Sample 
+
+- Warm up 1600s
+- Introduce .75 sweat and .75 blood Mix Sample 
+
+
 
 Future
 
