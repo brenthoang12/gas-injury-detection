@@ -134,7 +134,7 @@ Sweat
 - Warm up 4400s
 - Introduce .75 sweat and .75 blood Mix Sample 
 
-- Warm up
+- Warm up 1600s
 - Introduce .30 sweat and 1.20 blood Mix Sample 
 
 
@@ -158,7 +158,7 @@ Sweat
 - Warm up 5925s
 - Introduce 1.40 sweat and .10 blood Mix Sample 
 
-- Warm up 
+- Warm up 1600s
 - Introduce 1.20 sweat and .30 blood Mix Sample 
 
 - Warm up 1380s
