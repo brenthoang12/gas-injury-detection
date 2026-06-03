@@ -1,0 +1,18 @@
+Decisions tree
+    - Easy to build and interpret 
+    - Element of Statistical Learning: "Work great with data used to create them but not flexible when it comes to classify new samples
+
+Random Forest:
+    - Built from decision trees and resolve the flexible issue of decision trees
+    - It calls random due to bootstrapping and feature selection for each trees
+    - Ideal feature for each tree -> square root or log of number of features 
+
+Gradient Boosting:
+    - The final model is a sum of many "weak learners" (simple models, shallow decision trees or regression)
+    - Each new weak learner is trained to correct the mistakes of all previous ones (not raw label, just residual errors)
+    - Key tunning: loss functions, weak learner choice
+
+XGBoost:
+    - gamma -> pruning
+    - lambda -> prevent overfitting
+    - eta -> learning rate
