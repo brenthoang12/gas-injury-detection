@@ -1,0 +1,269 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+
+% ---------------------------------------------------------------- Page header
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{June 5, 2026}
+\rhead{Gas Injury Detection --- Progress Report}
+\cfoot{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\begin{document}
+
+% ---------------------------------------------------------------- Title block
+\thispagestyle{empty}
+\begin{center}
+    {\Huge\bfseries Gas Injury Detection}\\[0.5em]
+    {\large Wearable Sensor Classification --- Progress Report}\\[4em]
+    {\large June 5, 2026}
+\end{center}
+
+\vspace{2em}
+
+% ---------------------------------------------------------------- Key Results
+\section*{Key Results}
+
+\begin{itemize}
+    \item \textbf{The current sensor network reliably detects blood mixtures down to
+          20\% blood.} 
+
+    \item The best model, \textbf{XGBoost with feature reduction and causal temporal
+          smoothing}, runs in real time and reaches \textbf{95.8\% accuracy} on held-out
+          sessions, with the few remaining errors confined to the moment a sample is
+          introduced.
+
+    \item \textbf{NH\textsubscript{3} is the dominant blood marker} --- its level scales
+          with blood concentration, consistent with ammonia release from protein
+          breakdown in blood.
+
+\end{itemize}
+
+% ---------------------------------------------------------------- Detection floor
+\section*{Detection Floor: Why \texttt{mix\_140\_10} Was Excluded}
+
+\texttt{mix\_140\_10} is the lowest-concentration mixture: 6.7\% blood in 93.3\% sweat.
+NH\textsubscript{3} is the primary discriminator between blood and sweat, and its response
+scales with blood content. At 6.7\% the NH\textsubscript{3} response falls into the
+pure-sweat range, and two of the five \texttt{mix\_140\_10} sessions showed no measurable
+NH\textsubscript{3} elevation above sweat on either the peak or the sustained level.
+
+Since the two classes overlap in the sensor reading, the model cannot separate them, and
+including \texttt{mix\_140\_10} only adds noise to the blood class, so these sessions were
+excluded. The next ratio up, \texttt{mix\_120\_30} at 20\% blood, produces roughly double
+the sweat NH\textsubscript{3} and separates cleanly, which sets 20\% as the lowest blood
+content the network can reliably detect.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{mix140_overlap.png}
+    \caption{Sustained NH\textsubscript{3} per session by sample type. The 6.7\% blood
+    mixture (\texttt{mix\_140\_10}, green) interleaves with the pure-sweat range (shaded),
+    while the 20\% mixture (\texttt{mix\_120\_30}, blue) sits clearly above it. This
+    overlap is why 6.7\% samples cannot be added to the model.}
+\end{figure}
+
+% ---------------------------------------------------------------- Models
+\section*{Models Evaluated}
+
+Three model families were compared, chosen to span interpretability, temporal-modeling
+capacity, and suitability for embedded deployment.
+
+\begin{table}[H]
+\centering
+\caption{Model characteristics.}
+\begin{tabular}{p{2.3cm}p{5.3cm}p{5.3cm}}
+    \toprule
+    \textbf{Model} & \textbf{Strengths} & \textbf{Limitations} \\
+    \midrule
+    \textbf{Random Forest} &
+    Interpretable feature importances; robust on small tabular datasets; no input scaling
+    required. &
+    Requires hand-crafted window aggregates; does not learn from the raw time-series. \\
+    \addlinespace
+    \textbf{XGBoost} &
+    Gradient boosting corrects residual errors sequentially, outperforming RF on the same
+    features; L1/L2 regularization in the training objective penalizes model complexity
+    directly. &
+    Same tabular feature dependency as RF; less interpretable. \\
+    \addlinespace
+    \textbf{1D CNN} &
+    Learns temporal patterns directly from the raw signal; no manual feature engineering. &
+    Data-hungry; input normalization suppressed the low-magnitude NH\textsubscript{3}
+    signal, so it confused sweat with blood. \\
+    \bottomrule
+\end{tabular}
+\end{table}
+
+The Random Forest and XGBoost operate on 60\,s window aggregates (mean, std, max, slope)
+of the engineered feature set. The CNN consumes the raw 30\,s window directly. Across
+held-out sessions the tree models were clearly stronger: the task is fundamentally one of
+signal \emph{level} (how high NH\textsubscript{3} rises), which the raw feature values
+expose directly, whereas the CNN's per-channel scaling compressed that level away.
+
+% ---------------------------------------------------------------- Dataset
+\section*{Dataset}
+
+Data was collected across 28 sessions using the ESP32-based sensor array (VOC,
+NH\textsubscript{3}, HCHO, H\textsubscript{2}S, EtOH, plus temperature and humidity). The
+6.7\% mixture (\texttt{mix\_140\_10}) is excluded for the reason described above. Each
+session is manually labeled into baseline, sweat, and blood regions.
+
+Splits are performed at the session level so that all windows from a given session stay
+together, which prevents temporally correlated windows from leaking between training and
+test. 24 sessions are used for training and 4 are held out as unseen test data.
+Non-overlapping 60\,s windows produce 1{,}683 windows in total; the training windows are
+class-balanced (sweat bootstrapped, baseline undersampled) before the tree models are fit.
+
+\begin{table}[H]
+\centering
+\caption{Dataset summary.}
+\begin{tabular}{lr}
+    \toprule
+    \textbf{Property} & \textbf{Count} \\
+    \midrule
+    Total sessions & 28 \\
+    \quad Sweat & 8 \\
+    \quad Pure blood & 10 \\
+    \quad Mixture, 50\% blood (\texttt{mix\_75\_75}) & 5 \\
+    \quad Mixture, 20\% blood (\texttt{mix\_120\_30}) & 5 \\
+    \addlinespace
+    Training sessions & 24 \\
+    Held-out test sessions & 4 \\
+    \addlinespace
+    Total windows (60\,s) & 1{,}683 \\
+    Test windows & 215 \\
+    \bottomrule
+\end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------- Balancing
+\section*{Training Set Balancing}
+
+The 1{,}468 raw training windows are heavily imbalanced. Baseline dominates because each
+session spends most of its time before the sample is introduced, and sweat is the minority
+class. Training on this distribution would bias the model toward baseline and
+underrepresent sweat, so the three classes are balanced to the blood count of 442 windows.
+
+\textbf{Bootstrapping the sweat class.} Each synthetic sweat window is created by drawing
+an existing sweat window at random (with replacement) and adding Gaussian noise to every
+feature, scaled to 5\% of that feature's standard deviation across the sweat windows:
+$x_{\text{syn}} = x + \mathcal{N}(0, \sigma^2)$ with $\sigma = 0.05 \times \text{std}(x)$.
+The noise keeps each synthetic window recognizably sweat while avoiding exact duplicates,
+which would only reweight the same points without adding variety. This adds 282 synthetic
+windows, taking sweat from 160 to 442.
+
+\textbf{Undersampling the baseline class.} Baseline is randomly subsampled from 866 down
+to 442 windows.
+
+The final balanced training set is 1{,}326 windows, 442 per class. Balancing is applied to
+the training data only; the held-out test sessions keep their natural class distribution.
+
+\begin{table}[H]
+\centering
+\caption{Training window counts before and after balancing.}
+\begin{tabular}{lrr}
+    \toprule
+    \textbf{Class} & \textbf{Raw windows} & \textbf{After balancing} \\
+    \midrule
+    Baseline & 866   & 442 \quad(undersampled) \\
+    Sweat    & 160   & 442 \quad($+282$ bootstrapped) \\
+    Blood    & 442   & 442 \quad(unchanged) \\
+    \midrule
+    \textbf{Total} & \textbf{1{,}468} & \textbf{1{,}326} \\
+    \bottomrule
+\end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------- Performance
+\section*{Model Performance}
+
+Across model families, the gradient-boosted trees were the strongest. Table~4 compares
+overall accuracy on the four held-out sessions. XGBoost with importance-ranked feature
+reduction (top 80\% of features) is the best base model.
+
+\begin{table}[H]
+\centering
+\caption{Overall accuracy on held-out test sessions (sweat, pure blood, and
+20\% / 50\% mixtures), before temporal smoothing.}
+\begin{tabular}{lcc}
+    \toprule
+    \textbf{Model} & \textbf{Overall accuracy} & \textbf{Notes} \\
+    \midrule
+    Random Forest (all features)     & 96.7\% & 200 trees, balanced classes \\
+    XGBoost (naive)                  & 97.7\% & all features, defaults \\
+    \textbf{XGBoost (20\% feature reduction)} & \textbf{98.6\%} & importance-ranked pruning \\
+    1D CNN (regularized)             & 89.4\% & level signal lost in scaling \\
+    \bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{Best Model: XGBoost with Real-Time Smoothing}
+
+Because each 60\,s window is classified on its own, the raw predictions can flicker between
+classes from one window to the next. Since the windows form a time series, a causal
+temporal smoother averages the predicted probabilities over the last 5 windows before
+deciding, using only current and past data so it runs in real time. This produces stable
+predictions suitable for live deployment.
+
+On the held-out sessions the smoothed real-time model reaches \textbf{95.8\% overall}
+(Table~5). The small gap from the unsmoothed 98.6\% is onset lag: the smoother takes a few
+windows to commit after a sample is introduced. Almost all remaining errors fall in that
+onset window; once the response is established, predictions are correct and stable.
+
+\begin{table}[H]
+\centering
+\caption{Per-session accuracy of the deployed model (XGBoost, 20\% feature reduction,
+causal real-time smoothing).}
+\begin{tabular}{lcr}
+    \toprule
+    \textbf{Session} & \textbf{Type} & \textbf{Accuracy} \\
+    \midrule
+    \texttt{blood\_9}      & Pure blood          & 97.0\% \\
+    \texttt{sweat\_7}      & Pure sweat          & 96.6\% \\
+    \texttt{mix\_75\_75\_3}  & Mixture, 50\% blood & 95.7\% \\
+    \texttt{mix\_120\_30\_4} & Mixture, 20\% blood & 93.0\% \\
+    \midrule
+    \textbf{Overall} & (215 windows) & \textbf{95.8\%} \\
+    \bottomrule
+\end{tabular}
+\end{table}
+
+The figures below show the model's prediction over each held-out session. Green marks
+windows the model classified correctly, red marks errors. The error band sits at the sample
+introduction in every session; the long baseline and response regions are predicted
+correctly.
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.49\textwidth}\centering
+        \includegraphics[width=\textwidth]{pred_blood_9.png}
+    \end{minipage}\hfill
+    \begin{minipage}{0.49\textwidth}\centering
+        \includegraphics[width=\textwidth]{pred_sweat_7.png}
+    \end{minipage}
+
+    \vspace{0.6em}
+
+    \begin{minipage}{0.49\textwidth}\centering
+        \includegraphics[width=\textwidth]{pred_mix_75_75_3.png}
+    \end{minipage}\hfill
+    \begin{minipage}{0.49\textwidth}\centering
+        \includegraphics[width=\textwidth]{pred_mix_120_30_4.png}
+    \end{minipage}
+    \caption{Real-time predictions per held-out session (green = correct, red = incorrect).
+    Errors are confined to the onset transition when the sample is first introduced.}
+\end{figure}
+
+\end{document}
