@@ -1,0 +1,35 @@
+{
+  "model": "XGBoost Run 3 (20% feature reduction + causal smoothing)",
+  "classes": {
+    "0": "baseline",
+    "1": "sweat",
+    "2": "blood"
+  },
+  "window_size_s": 60,
+  "channels": [
+    "voc",
+    "nh3",
+    "hcho",
+    "h2s_ppm",
+    "etoh_ppm",
+    "rh_pct"
+  ],
+  "roll_windows_s": [
+    15,
+    30,
+    60
+  ],
+  "window_aggregates": [
+    "mean",
+    "std",
+    "max",
+    "slope"
+  ],
+  "n_features_selected": 173,
+  "smoothing": {
+    "type": "causal",
+    "trailing_window": 5,
+    "ema_alpha": 0.4
+  },
+  "n_trees": 261
+}

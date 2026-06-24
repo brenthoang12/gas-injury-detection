@@ -39,8 +39,8 @@
     \item \textbf{The current sensor network reliably detects blood mixtures down to
           20\% blood.} 
 
-    \item The best model, \textbf{XGBoost with feature reduction and causal temporal
-          smoothing}, runs in real time and reaches \textbf{95.8\% accuracy} on held-out
+    \item The best model, \textbf{XGBoost with feature reduction and a causal EMA
+          smoother}, runs in real time and reaches \textbf{97.7\% accuracy} on held-out
           sessions, with the few remaining errors confined to the moment a sample is
           introduced.
 
@@ -213,29 +213,31 @@ reduction (top 80\% of features) is the best base model.
 
 Because each 60\,s window is classified on its own, the raw predictions can flicker between
 classes from one window to the next. Since the windows form a time series, a causal
-temporal smoother averages the predicted probabilities over the last 5 windows before
-deciding, using only current and past data so it runs in real time. This produces stable
-predictions suitable for live deployment.
+\textbf{exponential moving average (EMA)} of the predicted probabilities is applied before
+deciding: it weights recent windows more heavily and uses only current and past data, so it
+runs in real time and needs only one running value per class (no buffer). This produces
+stable predictions suitable for live deployment.
 
-On the held-out sessions the smoothed real-time model reaches \textbf{95.8\% overall}
-(Table~5). The small gap from the unsmoothed 98.6\% is onset lag: the smoother takes a few
-windows to commit after a sample is introduced. Almost all remaining errors fall in that
-onset window; once the response is established, predictions are correct and stable.
+On the held-out sessions the smoothed real-time model reaches \textbf{97.7\% overall}
+(Table~5), essentially matching the unsmoothed 98.1\% while removing the jitter. The small
+gap is onset lag: the smoother takes a window or two to commit after a sample is introduced.
+Almost all remaining errors fall in that onset window; once the response is established,
+predictions are correct and stable.
 
 \begin{table}[H]
 \centering
-\caption{Per-session accuracy of the deployed model (XGBoost, 20\% feature reduction,
-causal real-time smoothing).}
+\caption{Per-session accuracy of the deployed model (XGBoost, feature reduction,
+causal EMA real-time smoothing).}
 \begin{tabular}{lcr}
     \toprule
     \textbf{Session} & \textbf{Type} & \textbf{Accuracy} \\
     \midrule
-    \texttt{blood\_9}      & Pure blood          & 97.0\% \\
-    \texttt{sweat\_7}      & Pure sweat          & 96.6\% \\
-    \texttt{mix\_75\_75\_3}  & Mixture, 50\% blood & 95.7\% \\
-    \texttt{mix\_120\_30\_4} & Mixture, 20\% blood & 93.0\% \\
+    \texttt{blood\_9}      & Pure blood          & 98.5\% \\
+    \texttt{sweat\_7}      & Pure sweat          & 98.3\% \\
+    \texttt{mix\_75\_75\_3}  & Mixture, 50\% blood & 97.9\% \\
+    \texttt{mix\_120\_30\_4} & Mixture, 20\% blood & 95.3\% \\
     \midrule
-    \textbf{Overall} & (215 windows) & \textbf{95.8\%} \\
+    \textbf{Overall} & (215 windows) & \textbf{97.7\%} \\
     \bottomrule
 \end{tabular}
 \end{table}

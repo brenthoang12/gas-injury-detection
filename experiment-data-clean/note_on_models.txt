@@ -14,5 +14,6 @@ Gradient Boosting:
 
 XGBoost:
     - gamma -> pruning
-    - lambda -> prevent overfitting
+    - lambda -> prevent overfitting -> reduce similarity score 
     - eta -> learning rate
+    - similarity score 
