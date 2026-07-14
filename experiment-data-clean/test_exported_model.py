@@ -1,127 +1,138 @@
-"""
-Validate the exported XGBoost Run 3 model on the held-out test sessions.
+"""Standalone tests for the exported XGBoost Run 6 model.
 
-Loads the artifacts in model_export/ (does NOT retrain), rebuilds the test windows
-with the same feature pipeline as training, applies the model + causal smoothing,
-and reports per-session accuracy. This is the offline sanity check before any
-on-device / ESP32 work: confirm the exported model reproduces ~95.8%.
+Run the export cells in combined_no_mix140.ipynb first so model_export/ contains:
+  xgb_run6.json, export_meta.json, feature_cols.json,
+  test_windows.pkl, test_windows_refpred.npy, persecond_mix_75_75_1.pkl
+
+Test 1: reload the exported model and confirm it reproduces the notebook model's
+        predictions on the held-out windows exactly (round-trip check).
+Test 2: take one mix_75_75 session and run the model "every second" — at each
+        second, build the trailing 60s window's features and predict — to see
+        what the continuous, unsmoothed prediction stream looks like.
 
 Run:  python test_exported_model.py
-Needs: model_export/  and  processed/
 """
-import os, json
+import os
+import json
 import numpy as np
 import pandas as pd
-import xgboost as xgb
+import matplotlib.pyplot as plt
+from xgboost import XGBClassifier
 
-# Paths are anchored to this script's folder so it runs from any working directory
-# (e.g. the outer repo root where the venv lives), not just experiment-data-clean/.
 HERE = os.path.dirname(os.path.abspath(__file__))
-EXPORT    = os.path.join(HERE, "model_export")
-PROCESSED = os.path.join(HERE, "processed")
-MEMS = ["voc", "nh3", "hcho"]; SPEC = ["h2s_ppm", "etoh_ppm"]; ENV = ["temp_C", "rh_pct"]
-ALL = MEMS + SPEC + ENV
-LB, LS, LBL = 0, 1, 2
-CLASS_NAMES = {LB: "baseline", LS: "sweat", LBL: "blood"}
+EXPORT = os.path.join(HERE, "model_export")
+CLASS_NAMES = {0: "baseline", 1: "sweat", 2: "blood"}
 
-# Held-out test sessions and their labelled sample windows (from SAMPLE_WINDOWS)
-TEST_WINDOWS = {
-    "sweat_7":      [(1760, 3610, LS)],
-    "blood_9":      [(2290, 4190, LBL)],
-    "mix_75_75_3":  [(1390, None, LBL)],
-    "mix_120_30_4": [(1675, None, LBL)],
-}
+# ── Load model + metadata ────────────────────────────────────────────────────
+model = XGBClassifier()
+model.load_model(f"{EXPORT}/xgb_run6.json")
+meta = json.load(open(f"{EXPORT}/export_meta.json"))
+RUN6_COLS = meta["run6_cols"]
+WINDOW = meta["window_size"]
+FEATURE_COLS = json.load(open(f"{EXPORT}/feature_cols.json"))
 
-# ── Load exported artifacts ───────────────────────────────────────────────────
-cfg  = json.load(open(f"{EXPORT}/xgb_run3_config.json"))
-cols = json.load(open(f"{EXPORT}/xgb_run3_features.json"))       # selected features, in order
-booster = xgb.Booster(); booster.load_model(f"{EXPORT}/xgb_run3.json")
 
-WIN      = cfg["window_size_s"]
-CHANNELS = cfg["channels"]
-ROLL     = cfg["roll_windows_s"]
-SMOOTH   = cfg["smoothing"]
-K        = SMOOTH["trailing_window"]
-A        = SMOOTH["ema_alpha"]
-print(f"Loaded model: {cfg['n_trees']} trees | {len(cols)} features | window {WIN}s | "
-      f"smoothing causal EMA (alpha={A})")
+def extract_window_features(window_df, feature_cols):
+    """Identical to the notebook's window aggregation: mean/std/max/slope per channel.
+    NaN is left in place (XGBoost handles it natively, as it did during training)."""
+    feats = {}
+    t = np.arange(len(window_df))
+    for col in feature_cols:
+        vals = window_df[col].values
+        feats[f"{col}_mean"] = np.nanmean(vals)
+        feats[f"{col}_std"] = np.nanstd(vals)
+        feats[f"{col}_max"] = np.nanmax(vals)
+        feats[f"{col}_slope"] = np.polyfit(t, vals, 1)[0] if len(vals) > 1 else 0.0
+    return feats
 
-# ── Load + merge the test sessions ────────────────────────────────────────────
-def _load(prefix):
-    out = {}
-    for f in sorted(os.listdir(PROCESSED)):
-        if f.startswith(prefix) and f.endswith(".pkl"):
-            key = f[len(prefix):-4]
-            if key in TEST_WINDOWS:
-                out[key] = pd.read_pickle(os.path.join(PROCESSED, f))
-    return out
 
-mems, spec = _load("mems_"), _load("spec_")
-test = {}
-for k in TEST_WINDOWS:
-    m, s = mems[k], spec[k]
-    merged = pd.merge(m, s[["elapsed_s"] + SPEC], on="elapsed_s", how="inner")
-    if len(merged) < max(len(m), len(s)):
-        m_s = m.sort_values("elapsed_s").reset_index(drop=True)
-        s_s = s[["elapsed_s"] + SPEC].sort_values("elapsed_s").reset_index(drop=True)
-        merged = pd.merge_asof(m_s, s_s, on="elapsed_s", tolerance=0.5,
-                               direction="nearest").dropna(subset=SPEC).reset_index(drop=True)
-    test[k] = merged[["elapsed_s"] + ALL].reset_index(drop=True)
+# ── Test 1: exact match against the notebook model's predictions ─────────────
+def test_1_exact_match():
+    df = pd.read_pickle(f"{EXPORT}/test_windows.pkl")
+    ref = np.load(f"{EXPORT}/test_windows_refpred.npy", allow_pickle=True)
+    pred = model.predict(df[RUN6_COLS])
 
-# ── Feature engineering + labelling (must match training exactly) ─────────────
-def feateng(df):
-    df = df.copy()
-    for c in CHANNELS:
-        df[f"{c}_roc"] = df[c].diff()
-        df[f"{c}_acc"] = df[f"{c}_roc"].diff()
-        for w in ROLL:
-            df[f"{c}_roll_mean_{w}"] = df[c].rolling(w, min_periods=1).mean()
-            df[f"{c}_roll_std_{w}"]  = df[c].rolling(w, min_periods=1).std().fillna(0)
-            df[f"{c}_roll_roc_{w}"]  = df[f"{c}_roc"].abs().rolling(w, min_periods=1).mean()
-    return df
+    n_match = int((pred == ref).sum())
+    print("=" * 60)
+    print("[Test 1] Exported model vs notebook model on held-out windows")
+    print("=" * 60)
+    print(f"  windows:        {len(ref)}")
+    print(f"  exact matches:  {n_match}/{len(ref)}  ({n_match / len(ref):.2%})")
+    print(f"  accuracy vs true labels: {(pred == df['label'].values).mean():.2%}")
+    assert n_match == len(ref), "reloaded model predictions differ from the reference!"
+    print("  PASS: exported file reproduces the notebook model exactly.")
 
-EXC = {"elapsed_s", "label", "session", "temp_C"}
-for k in test:
-    df = feateng(test[k]); df["label"] = LB
-    for t0, t1, lbl in TEST_WINDOWS[k]:
-        t = df["elapsed_s"]
-        mask = (t >= t0) & (t <= (t1 if t1 is not None else t.iloc[-1]))
-        df.loc[mask, "label"] = lbl
-    test[k] = df
-FEAT = [c for c in next(iter(test.values())).columns if c not in EXC]
 
-def window_features(w):
-    f = {}; t = np.arange(len(w))
-    for c in FEAT:
-        v = w[c].values
-        f[f"{c}_mean"]  = np.nanmean(v)
-        f[f"{c}_std"]   = np.nanstd(v)
-        f[f"{c}_max"]   = np.nanmax(v)
-        f[f"{c}_slope"] = (np.polyfit(t, v, 1)[0] if len(v) > 1 else 0.0)
-    return f
+# ── Test 2: predict every second on one mix_75_75 session ────────────────────
+def test_2_per_second(session=None):
+    session = session or meta["sec_session"]
+    df = pd.read_pickle(f"{EXPORT}/persecond_{session}.pkl").reset_index(drop=True)
 
-# ── Predict (loaded model) + causal smoothing, per session ────────────────────
-print(f"\n{'Session':<16}{'Windows':>9}{'Raw':>9}{'Smoothed':>11}")
-print("-" * 45)
-all_true, all_raw, all_sm = [], [], []
-for sess in TEST_WINDOWS:
-    df = test[sess]; rows, meta = [], []
-    for lbl in [LB, LS, LBL]:
-        ld = df[df["label"] == lbl].reset_index(drop=True)
-        for q in range(len(ld) // WIN):
-            w = ld.iloc[q * WIN:(q + 1) * WIN]
-            rows.append(window_features(w)); meta.append((w["elapsed_s"].iloc[0], lbl))
-    W = pd.DataFrame(rows)
-    order = np.argsort([m[0] for m in meta])                 # chronological
-    yt    = np.array([meta[o][1] for o in order])
-    dm    = xgb.DMatrix(W.iloc[order][cols], feature_names=cols)
-    probas = booster.predict(dm)                              # (n, 3) class probabilities
-    raw   = np.argmax(probas, axis=1)
-    sm    = np.argmax(pd.DataFrame(probas).ewm(alpha=A, adjust=False).mean().values, axis=1)  # causal EMA
-    all_true.extend(yt); all_raw.extend(raw); all_sm.extend(sm)
-    print(f"{sess:<16}{len(yt):>9}{(raw==yt).mean():>8.1%}{(sm==yt).mean():>10.1%}")
+    # slide a trailing 60s window, one prediction per second once history is full
+    rows, times, truth = [], [], []
+    for end in range(WINDOW, len(df) + 1):
+        w = df.iloc[end - WINDOW:end]
+        rows.append(extract_window_features(w, FEATURE_COLS))
+        times.append(float(df["elapsed_s"].iloc[end - 1]))
+        truth.append(int(df["label"].iloc[end - 1]))
+    X = pd.DataFrame(rows)[RUN6_COLS]
+    pred = model.predict(X)
+    truth = np.array(truth)
+    times = np.array(times)
 
-print("-" * 45)
-at, ar, asm = map(np.array, (all_true, all_raw, all_sm))
-print(f"{'OVERALL':<16}{len(at):>9}{(ar==at).mean():>8.1%}{(asm==at).mean():>10.1%}")
-print(f"\nDeployed (EMA-smoothed) accuracy: {(asm==at).mean():.1%}  — expect ~97.7%")
+    print("\n" + "=" * 60)
+    print(f"[Test 2] Per-second prediction on {session}")
+    print("=" * 60)
+    print(f"  seconds predicted: {len(pred)}  (one per second after the first {WINDOW}s)")
+    print("  predicted-class breakdown:")
+    for k, name in CLASS_NAMES.items():
+        c = int((pred == k).sum())
+        print(f"    {name:<9} {c / len(pred):>6.1%}  ({c})")
+    print(f"  accuracy vs per-second labels: {(pred == truth).mean():.1%}")
+
+    # run-length timeline: collapse consecutive equal predictions into segments
+    print("\n  prediction timeline (start-end seconds -> class):")
+    start = 0
+    for i in range(1, len(pred) + 1):
+        if i == len(pred) or pred[i] != pred[start]:
+            print(f"    {times[start]:>6.0f}s - {times[i - 1]:>6.0f}s   {CLASS_NAMES[int(pred[start])]}")
+            start = i
+
+    _plot_per_second(session, df, times, pred, truth)
+
+
+def _plot_per_second(session, df, times, pred, truth):
+    """Top: raw per-second prediction vs the true label. Bottom: the sensor
+    channels, so the transition/settling region lines up with the signal."""
+    tmin = times / 60.0
+    ok = pred == truth
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), sharex=True,
+                                   gridspec_kw={"height_ratios": [2, 1]})
+
+    ax1.step(tmin, truth, where="post", color="0.7", lw=1.4, zorder=1, label="true label")
+    ax1.scatter(tmin[ok], pred[ok], color="seagreen", s=20, zorder=3, label="correct")
+    ax1.scatter(tmin[~ok], pred[~ok], color="crimson", s=30, marker="X", zorder=3, label="wrong")
+    ax1.set_yticks([0, 1, 2]); ax1.set_yticklabels(["baseline", "sweat", "blood"])
+    ax1.set_ylim(-0.5, 2.5); ax1.set_ylabel("prediction (per second)")
+    ax1.grid(True, axis="x", alpha=0.25, linestyle="--")
+    ax1.legend(fontsize=8, loc="center left", ncol=3)
+    ax1.set_title(f"{session} — raw per-second prediction  (accuracy {(pred == truth).mean():.1%})",
+                  fontsize=10, fontweight="bold")
+
+    tfull = df["elapsed_s"].values / 60.0
+    for ch in ["voc", "nh3", "hcho", "etoh_ppm"]:
+        if ch in df.columns:
+            ax2.plot(tfull, df[ch].values, lw=0.9, alpha=0.85, label=ch)
+    ax2.set_ylabel("sensor value"); ax2.set_xlabel("elapsed time (min)")
+    ax2.grid(True, alpha=0.25, linestyle="--"); ax2.legend(fontsize=8, ncol=4)
+
+    plt.tight_layout()
+    out = os.path.join(EXPORT, f"test2_per_second_{session}.png")
+    fig.savefig(out, dpi=130)
+    print(f"\n  saved figure: {out}")
+    plt.show()
+
+
+if __name__ == "__main__":
+    test_1_exact_match()
+    test_2_per_second()
